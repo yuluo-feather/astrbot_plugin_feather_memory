@@ -41,7 +41,7 @@ Feather Memory does not touch the framework KV store and does not import Star Fe
 
 - 📝 **Explicit memory**: `/羽忆 记住 偏好 温柔一点` saves a preference, background or goal in one line — up to 160 characters, with a notice when it gets truncated
 - 🎯 **Fixed topics**: private normal readings contribute only a fixed enum — work / study / relationship / family / finance / health / social / travel. A question that hits several topics, or none, yields an empty topic; no semantic guessing
-- 🚫 **No raw questions**: events carry the spread, the cards and the topic enum only — **never the words you asked**. Group chats and the daily fortune do not feed it
+- 🚫 **No raw questions**: events carry the spread, cards and topic enum, plus an event id, platform / user identifiers, timestamp and core version for dedupe and indexing — **never the words you asked**. Group chats and the daily fortune do not feed it
 - 🔁 **Revocable**: `/羽忆 关闭` immediately deletes auth, context and pending events; saved memories remain until `/羽忆 清空`
 - 🧩 **Plug and play**: if Feather Memory is absent, the lease is stale or the shared directory is missing, Star Feather simply behaves as if there were no memory
 - 🗂️ **Two sources merged**: explicit entries and recent topics become one context block of at most 600 characters and 5 items, valid for 30 days
@@ -57,7 +57,7 @@ Feather Memory does not touch the framework KV store and does not import Star Fe
 | 📖 View | `/羽忆` | List saved entries and recent topics |
 | ✍️ Remember | `/羽忆 记住 <text>` | Save a preference / background / goal (optional `偏好` / `背景` / `目标` prefix; enables the master switch) |
 | 🗑️ Forget | `/羽忆 忘记 <id>` | Delete one saved entry (ids look like `#12` in the list) |
-| 🧹 Clear | `/羽忆 清空` | Clear all Feather Memory data after a second confirmation (reply `确认` within 60 seconds) |
+| 🧹 Clear | `/羽忆 清空` | Clear **your own** Feather Memory data after a second confirmation (reply `确认` within 60 seconds, or send `/羽忆 清空 确认`) |
 | 🔛 Enable | `/羽忆 开启` | Turn on the master switch, auto history and topic recording in one step (one auth write) |
 | 🤖 Auto history | `/羽忆 开启 自动` | Fine-grained: allow private normal readings to feed recent topics (idempotent) |
 | 🏷️ Topic recording | `/羽忆 开启 主题` | Fine-grained: allow events to carry the fixed topic enum (idempotent, requires auto history first) |
@@ -153,7 +153,7 @@ Restart AstrBot and the plugin loads automatically.
 2. **Turn on Feather Memory**: set `memory.enabled` in its configuration.
 3. **Turn on the two Star Feather switches**: `memory.feed_enabled` and `memory.context_enabled`.
 4. **Reload the plugins** after changing configuration (Feather Memory first, then Star Feather if needed); Feather Memory writes its lease within 5–10 seconds of startup.
-5. **Check the chain**: send `/羽忆 状态` in a private chat — it should show "全局：已启用" and "租约：有效"; then run `/羽忆 开启 自动`, `/羽忆 开启 主题` and do a normal reading.
+5. **Check the chain**: send `/羽忆 状态` in a private chat — it should show "全局：已启用" and "租约：有效"; then run `/羽忆 开启` (master switch, auto history and topic recording in one step); use `开启 自动` / `开启 主题` only for fine-tuning, then do a normal reading.
 
 **Dependencies**: none at runtime — only the Python standard library and the AstrBot host API.
 
@@ -161,9 +161,11 @@ Restart AstrBot and the plugin loads automatically.
 
 - **Stored**: short entries you save explicitly (preferences / background / goals); the spread, cards and fixed topic enum of private normal readings and single draws.
 - **Not stored**: group-chat events, the daily fortune, full chat logs, original questions, passwords or tokens.
+- Event files also contain `event_id`, `user_key`, `platform_id`, `created_at` and `source_version` for dedupe, indexing and diagnostics; the original question is not included.
 - Topics use a fixed enum (work / study / relationship / family / finance / health / social / travel); a question hitting several topics, or none, yields an empty topic.
 - Memory text is sanitised and length-limited at injection time and explicitly labelled as reference material, not system instructions; it never overrides the system prompt.
-- Shared files: events are kept for 7 days, auth for 180 days, context for 30 days; expired files are swept by both sides according to their TTLs.
+- Shared files: events are kept for 7 days, auth for 180 days, context for 30 days; expired files are swept by both sides according to their TTLs. `context/*.lock` files are persistent coordination artifacts with no memory body; cleanup only handles `.json`.
+- Clear removes **your own** data; the `users` row keeps `enabled` and `cleared_at` so events from before the clear cannot be consumed again.
 - Uninstalling Feather Memory deletes its lease; the shared directory is not removed automatically and leftover files are left to TTL cleanup.
 
 ## 🤍 Technical Details

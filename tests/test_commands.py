@@ -71,7 +71,7 @@ def test_clear_requires_confirmation(service, clock):
     handle_command(service, USER, True, "记住 喜欢温柔")
     first = handle_command(service, USER, True, "清空")
     assert first.startswith("确认清空")
-    assert handle_command(service, USER, True, "清空 确认") == "已清空羽忆数据，并关闭自动历史与主题记录。"
+    assert handle_command(service, USER, True, "清空 确认") == "已清空你的羽忆数据，并关闭自动历史与主题记录。"
 
 
 def test_clear_confirmation_expires(service, clock):
@@ -80,6 +80,41 @@ def test_clear_confirmation_expires(service, clock):
     assert handle_command(service, USER, True, "清空").startswith("确认清空")
     clock.advance(seconds=61)
     assert handle_command(service, USER, True, "清空 确认") == "确认已过期，请重新发送 /羽忆 清空。"
+
+
+def test_standalone_confirm_clears(service):
+    service.startup()
+    handle_command(service, USER, True, "开启")
+    handle_command(service, USER, True, "记住 喜欢温柔")
+    assert handle_command(service, USER, True, "清空").startswith("确认清空你的")
+    assert handle_command(service, USER, True, "确认") == "已清空你的羽忆数据，并关闭自动历史与主题记录。"
+
+
+def test_confirm_without_request(service):
+    service.startup()
+    assert handle_command(service, USER, True, "确认") == "没有待确认或已过期的清空请求；发送 /羽忆 清空 重新发起。"
+
+
+def test_forget_accepts_hash_prefix(service):
+    service.startup()
+    handle_command(service, USER, True, "开启")
+    handle_command(service, USER, True, "记住 喜欢温柔")
+    assert handle_command(service, USER, True, "忘记 #1") == "已删除 #1。"
+
+
+def test_global_disabled_still_allows_close_and_clear(store, feed, clock):
+    service = MemoryService(store, feed, global_enabled=False, version="0.1.0",
+                            clock=clock.now)
+    service.store.ensure_user(USER, clock.now())
+    service.store.set_user_flags(
+        USER, clock.now(), enabled=1, auto_history=1, store_topic=1)
+    service.refresh_auth(USER, clock.now())
+    service.store.save_memory(USER, "preference", "喜欢温柔", "喜欢温柔", clock.now())
+    assert "已关闭羽忆" in handle_command(service, USER, True, "关闭")
+    service.store.save_memory(USER, "preference", "喜欢雨天", "喜欢雨天", clock.now())
+    assert handle_command(service, USER, True, "清空").startswith("确认清空你的")
+    assert handle_command(service, USER, True, "确认").startswith("已清空你的")
+    assert service.store.count_memories(USER) == 0
 
 
 def test_group_only_allows_status_and_disable(service):

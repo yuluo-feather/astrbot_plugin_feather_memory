@@ -274,6 +274,45 @@ class SqliteStore:
 
     # ---- readings ------------------------------------------------------
 
+    def set_flag_if_enabled(self, user_key: str, now: datetime, *,
+                            auto_history: int | None = None,
+                            store_topic: int | None = None,
+                            require_auto: bool = False) -> str:
+        """条件更新开关：只有用户仍启用（且需要时 auto_history=1）才写入。
+
+        返回 ok / not_enabled / auto_required，用于堵住 disable 与 enable_* 的竞态。
+        """
+        assignments = []
+        params = []
+        if auto_history is not None:
+            assignments.append("auto_history = ?")
+            params.append(int(auto_history))
+        if store_topic is not None:
+            assignments.append("store_topic = ?")
+            params.append(int(store_topic))
+        if not assignments:
+            raise ValueError("no flag to update")
+        where = "user_key = ? AND enabled = 1"
+        if require_auto:
+            where += " AND auto_history = 1"
+        with self._connect() as conn:
+            cursor = conn.execute(
+                f"UPDATE users SET {', '.join(assignments)}, updated_at = ?"
+                f" WHERE {where}",
+                (*params, format_ts(now), user_key),
+            )
+            if cursor.rowcount > 0:
+                return "ok"
+            row = conn.execute(
+                "SELECT enabled, auto_history FROM users WHERE user_key = ?",
+                (user_key,),
+            ).fetchone()
+        if row is None or not row["enabled"]:
+            return "not_enabled"
+        if require_auto and not row["auto_history"]:
+            return "auto_required"
+        return "not_enabled"
+
     def insert_reading(self, event: ReadingEvent, now: datetime) -> bool:
         cards_json = json.dumps([card.to_dict() for card in event.cards],
                                 ensure_ascii=False, separators=(",", ":"))
@@ -295,6 +334,44 @@ class SqliteStore:
                     (format_ts(now), event.user_key),
                 )
         return inserted
+
+    def insert_reading_guarded(self, event: ReadingEvent, now: datetime) -> str:
+        """在同一写事务里复查 enabled / cleared_at，再决定是否入库。
+
+        返回 inserted / duplicate / stale。stale 表示用户在消费前已关闭或已清空。
+        """
+        cards_json = json.dumps([card.to_dict() for card in event.cards],
+                                ensure_ascii=False, separators=(",", ":"))
+        created_at = format_ts(parse_ts(event.created_at))
+        created_moment = parse_ts(event.created_at)
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT enabled, cleared_at FROM users WHERE user_key = ?",
+                (event.user_key,),
+            ).fetchone()
+            if row is None or not row["enabled"]:
+                return "stale"
+            cleared_at = row["cleared_at"] or ""
+            if cleared_at:
+                try:
+                    if created_moment <= parse_ts(cleared_at):
+                        return "stale"
+                except ValueError:
+                    return "stale"
+            cursor = conn.execute(
+                "INSERT OR IGNORE INTO readings(event_id, user_key, created_at, kind, spread,"
+                " cards_json, topic_key, conversation_scope) VALUES(?,?,?,?,?,?,?,?)",
+                (event.event_id, event.user_key, created_at, event.kind, event.spread,
+                 cards_json, event.topic_key, event.conversation_scope),
+            )
+            if cursor.rowcount == 0:
+                return "duplicate"
+            conn.execute(
+                "UPDATE users SET context_revision = context_revision + 1,"
+                " context_dirty = 1, updated_at = ? WHERE user_key = ?",
+                (format_ts(now), event.user_key),
+            )
+        return "inserted"
 
     def topic_stats(self, user_key: str, now: datetime,
                     max_events: int = READING_RETENTION_COUNT,

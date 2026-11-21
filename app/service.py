@@ -190,12 +190,16 @@ class MemoryService:
                 continue
 
             try:
-                inserted = self.store.insert_reading(event, now)
+                result = self.store.insert_reading_guarded(event, now)
             except Exception as exc:  # SQLite 故障：保留文件，下次重试
                 self.log.error("写入事件 %s 失败：%s", event.event_id, exc)
                 continue
 
-            if inserted:
+            if result == "stale":
+                self.log.info("丢弃事件 %s：用户已关闭或在清空之前", event.event_id)
+                self._delete_event(path)
+                continue
+            if result == "inserted":
                 consumed += 1
                 affected.add(event.user_key)
                 try:
@@ -402,10 +406,9 @@ class MemoryService:
 
     def enable_auto(self, user_key: str) -> str:
         now = self.clock()
-        user = self.store.get_user(user_key)
-        if user is None or not user["enabled"]:
-            return "not_enabled"
-        self.store.set_user_flags(user_key, now, auto_history=1)
+        code = self.store.set_flag_if_enabled(user_key, now, auto_history=1)
+        if code != "ok":
+            return code
         self.refresh_auth(user_key, now)
         self.rebuild_context(user_key, now)
         self.log.info("开关：auto(%s)=1", self._tag(user_key))
@@ -413,12 +416,10 @@ class MemoryService:
 
     def enable_topic(self, user_key: str) -> str:
         now = self.clock()
-        user = self.store.get_user(user_key)
-        if user is None or not user["enabled"]:
-            return "not_enabled"
-        if not user["auto_history"]:
-            return "auto_required"
-        self.store.set_user_flags(user_key, now, store_topic=1)
+        code = self.store.set_flag_if_enabled(
+            user_key, now, store_topic=1, require_auto=True)
+        if code != "ok":
+            return code
         self.refresh_auth(user_key, now)
         self.rebuild_context(user_key, now)
         self.log.info("开关：topic(%s)=1", self._tag(user_key))

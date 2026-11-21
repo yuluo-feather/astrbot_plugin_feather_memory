@@ -64,6 +64,45 @@ def test_upsert_memory_dedupes_same_normalized(store, clock):
     assert _count(store, "memories") == 1
 
 
+def test_insert_reading_guarded_states(store, clock, make_event):
+    user = "aiocqhttp:1"
+    store.ensure_user(user, clock.now())
+    store.set_user_flags(user, clock.now(), enabled=1)
+    event = make_event("01JGUARD", user)
+    assert store.insert_reading_guarded(event, clock.now()) == "inserted"
+    assert store.insert_reading_guarded(event, clock.now()) == "duplicate"
+    store.disable_user(user, clock.now())
+    assert store.insert_reading_guarded(
+        make_event("01JGUARD2", user), clock.now()) == "stale"
+
+
+def test_insert_reading_guarded_respects_cleared_at(store, clock, make_event):
+    user = "aiocqhttp:1"
+    store.ensure_user(user, clock.now())
+    store.set_user_flags(user, clock.now(), enabled=1)
+    store.clear_user_data(user, clock.now())
+    before = format_ts(clock.now() - timedelta(seconds=1))
+    after = format_ts(clock.now() + timedelta(seconds=1))
+    assert store.insert_reading_guarded(
+        make_event("01JOLD", user, created_at=before), clock.now()) == "stale"
+    assert store.insert_reading_guarded(
+        make_event("01JNEW", user, created_at=after), clock.now()) == "inserted"
+
+
+def test_set_flag_if_enabled(store, clock):
+    user = "aiocqhttp:1"
+    store.ensure_user(user, clock.now())
+    store.set_user_flags(user, clock.now(), enabled=1)
+    assert store.set_flag_if_enabled(user, clock.now(), auto_history=1) == "ok"
+    assert store.set_flag_if_enabled(
+        user, clock.now(), store_topic=1, require_auto=True) == "ok"
+    store.set_user_flags(user, clock.now(), auto_history=0)
+    assert store.set_flag_if_enabled(
+        user, clock.now(), store_topic=1, require_auto=True) == "auto_required"
+    store.disable_user(user, clock.now())
+    assert store.set_flag_if_enabled(user, clock.now(), auto_history=1) == "not_enabled"
+
+
 def test_insert_reading_dedupes_event_id(store, clock, make_event):
     event = make_event("01JDUP")
     assert store.insert_reading(event, clock.now()) is True
