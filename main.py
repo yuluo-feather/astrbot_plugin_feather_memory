@@ -40,6 +40,14 @@ class FeatherMemoryPlugin(Star):
         self._fatal = ""
 
     async def initialize(self):
+        logger.info(fr"""
+  __                _   _
+ / _| ___  __ _  ___| |_| |__   ___ _ __
+| |_ / _ \/ _` |/ __| __| '_ \ / _ \ '__|
+|  _|  __/ (_| | (__| |_| | | |  __/ |
+|_|  \___|\__,_|\___|\__|_| |_|\___|_|
+羽忆 v{VERSION} · 只记你愿意让我记的事。
+""")
         try:
             await asyncio.to_thread(self.service.startup)
         except Exception as exc:
