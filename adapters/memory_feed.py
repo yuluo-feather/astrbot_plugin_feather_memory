@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import os
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable
@@ -289,6 +289,26 @@ class MemoryFeed:
     def state_lock(self, timeout_ms: int = 2000) -> FileLock:
         """跨进程状态转换锁；锁序固定 state.lock → context.lock。"""
         return FileLock(self.layout.state_lock_path, timeout_ms=timeout_ms)
+
+    def expire_context(self, user_key_hash: str, timeout_ms: int = 1000) -> bool:
+        """删除失败时的兜底：把 context 改成已过期，保证核心不再注入。"""
+        path = self.context_path(user_key_hash)
+        lock_path = self.layout.context_dir / f"{user_key_hash}.lock"
+        try:
+            with FileLock(lock_path, timeout_ms=timeout_ms):
+                try:
+                    context = MemoryContext.parse(
+                        self._read_json(path, CONTEXT_MAX_BYTES))
+                except (OSError, ContractError):
+                    return False
+                expired = replace(context, expires_at=context.generated_at)
+                try:
+                    self._write_json(path, expired.to_dict(), CONTEXT_MAX_BYTES)
+                except (OSError, ContractError):
+                    return False
+                return True
+        except (LockTimeout, OSError):
+            return False
 
     def write_context(self, user_key_hash: str, context: MemoryContext,
                       timeout_ms: int = 200,

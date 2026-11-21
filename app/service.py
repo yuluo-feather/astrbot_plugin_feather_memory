@@ -219,7 +219,11 @@ class MemoryService:
                 self.log.warning("读取事件 %s 失败：%s", path.name, exc)
                 continue
 
-            event = self._check_event(event, now)
+            try:
+                event = self._check_event(event, now)
+            except Exception as exc:  # 校验/登记故障：保留文件，下次重试
+                self.log.error("校验事件 %s 失败：%s", event.event_id, exc)
+                continue
             if event is None:
                 self._delete_event(path)
                 continue
@@ -272,7 +276,9 @@ class MemoryService:
                 self._try_refresh_auth(event.user_key, now)
                 self.log.info("首次事件登记：user=%s", self._tag(event.user_key))
         if not user["enabled"]:
-            self._try_refresh_auth(event.user_key, now)
+            auth = self.feed.read_auth(user_key_hash(event.user_key))
+            if auth is None or auth.auto_history or auth.store_topic:
+                self._try_refresh_auth(event.user_key, now)
             self.log.info("丢弃事件 %s：用户总开关关闭", event.event_id)
             return None
         if not user["auto_history"]:
@@ -319,8 +325,13 @@ class MemoryService:
     # ---- context -------------------------------------------------------
 
     def _drop_context(self, user_key: str, now: datetime) -> bool:
-        """删除 context；删不掉就置 dirty，交给下一次重建 / 启动重试。"""
-        if self.feed.delete_context(user_key_hash(user_key)):
+        """删除 context；删不掉就改写成已过期，仍不行才置 dirty。"""
+        digest = user_key_hash(user_key)
+        if self.feed.delete_context(digest):
+            return True
+        if self.feed.expire_context(digest):
+            self.store.set_context_dirty(user_key, True, now)
+            self.log.warning("context 删除失败（已改写为过期）：user=%s", user_key)
             return True
         self.store.set_context_dirty(user_key, True, now)
         self.log.warning("context 删除失败（已置 dirty）：user=%s", user_key)
@@ -435,8 +446,8 @@ class MemoryService:
     def _try_refresh_auth(self, user_key: str, now: datetime) -> bool:
         try:
             return self.refresh_auth(user_key, now)
-        except LockTimeout:
-            self.log.warning("授权刷新跳过：状态锁超时 user=%s", self._tag(user_key))
+        except (LockTimeout, OSError):
+            self.log.warning("授权刷新跳过：状态锁不可用 user=%s", self._tag(user_key))
             return False
 
     def _refresh_auth_impl(self, user_key: str, now: datetime) -> bool:
@@ -664,6 +675,11 @@ class MemoryService:
             self.store.clear_user_data(user_key, now)
             removed, failures = self._cleanup_context_and_events(user_key, now)
             self._cleanup_exports(user_key, failures)
+            user = self.store.get_user(user_key)
+            if user is not None and not user["enabled"]:
+                # 未开启的用户清空后仍是 opt-out：补墓碑，避免星羽误发首次提示。
+                if not self._refresh_auth_impl(user_key, now):
+                    failures.append("auth")
             self._clear_pending.pop(user_key, None)
             self.log.info("开关：clear(%s)，清理事件 %d 条",
                           self._tag(user_key), removed)

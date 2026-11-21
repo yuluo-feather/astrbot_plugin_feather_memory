@@ -38,6 +38,13 @@ def _last_reading_text(value: str | None) -> str:
     return _short_ts(value) if value else "还没有"
 
 
+def _clear_effect_text(service: MemoryService, user_key: str) -> str:
+    user = service.user_state(user_key)
+    if user is not None and user["enabled"] and user["auto_history"]:
+        return "只删除已有数据，之后仍会继续记录；要停止请发送 /羽忆 关闭。"
+    return "只删除已有数据；当前未开启自动记录，之后不会继续记录；要开启请发送 /羽忆 开启。"
+
+
 def _list_text(service: MemoryService, user_key: str) -> str:
     user = service.user_state(user_key)
     if user is None or not user["enabled"]:
@@ -192,10 +199,10 @@ def handle_command(service: MemoryService, user_key: str,
                 return ("已清空，但文件清理未完成（"
                         + "/".join(failures)
                         + "），已标记待重试，请稍后再试或查看日志。")
-            return "已清空你的羽忆数据；只删除已有数据，之后仍会继续记录；要停止请发送 /羽忆 关闭。"
+            return "已清空你的羽忆数据。" + _clear_effect_text(service, user_key)
         service.request_clear(user_key)
         return ("确认清空你的全部羽忆数据？60 秒内发送 /羽忆 清空 确认 执行。"
-                "只删除已有数据，之后仍会继续记录；要停止请发送 /羽忆 关闭。")
+                + _clear_effect_text(service, user_key))
 
     def _export() -> str:
         try:

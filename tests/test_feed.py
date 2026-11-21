@@ -148,6 +148,19 @@ def test_delete_context_if_skips_when_guard_false(feed, clock):
     assert feed.read_context(digest) is None
 
 
+def test_expire_context_makes_it_unusable(feed, clock):
+    digest = user_key_hash("aiocqhttp:1")
+    feed.write_context(digest, _context(clock, 1))
+    assert feed.expire_context(digest) is True
+    context = feed.read_context(digest)
+    assert context is not None
+    assert context.is_usable(clock.now()) is False
+
+
+def test_expire_context_missing_file_returns_false(feed):
+    assert feed.expire_context(user_key_hash("aiocqhttp:none")) is False
+
+
 def test_context_lock_timeout(feed, clock):
     digest = user_key_hash("aiocqhttp:1")
     lock_path = feed.layout.context_dir / f"{digest}.lock"

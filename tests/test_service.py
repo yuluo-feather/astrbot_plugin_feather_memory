@@ -513,6 +513,8 @@ def test_clear_collects_context_failure(service, feed, monkeypatch, enabled_user
     service.remember(enabled_user, "喜欢温柔")
     monkeypatch.setattr(feed, "delete_context",
                         lambda digest, timeout_ms=1000: False)
+    monkeypatch.setattr(feed, "expire_context",
+                        lambda digest, timeout_ms=1000: False)
     removed, failures = service.clear(enabled_user)
     assert removed == 0
     assert failures == ["context"]
@@ -651,3 +653,91 @@ def test_clear_keeps_auth_and_switches(service, feed, clock, enabled_user):
     row = service.user_state(enabled_user)
     assert (row["enabled"], row["auto_history"], row["store_topic"]) == (1, 1, 1)
     assert service.store.count_memories(enabled_user) == 0
+
+
+def test_clear_disabled_user_keeps_tombstone(service, feed, clock):
+    user = "aiocqhttp:777"
+    service.startup()
+    service.enable(user)
+    service.disable(user)
+
+    service.clear(user)
+
+    row = service.user_state(user)
+    assert (row["enabled"], row["auto_history"], row["store_topic"]) == (0, 0, 0)
+    auth = feed.read_auth(user_key_hash(user))
+    assert auth is not None
+    assert auth.auto_history is False and auth.store_topic is False
+
+
+def test_clear_unknown_user_writes_tombstone(service, feed, clock):
+    user = "aiocqhttp:404"
+
+    service.clear(user)
+
+    row = service.user_state(user)
+    assert row is not None
+    assert (row["enabled"], row["auto_history"], row["store_topic"]) == (0, 0, 0)
+    auth = feed.read_auth(user_key_hash(user))
+    assert auth is not None
+    assert auth.auto_history is False and auth.store_topic is False
+
+
+def test_disable_expires_context_when_delete_fails(
+        service, feed, clock, enabled_user, monkeypatch):
+    service.remember(enabled_user, "喜欢温柔")
+    digest = user_key_hash(enabled_user)
+    assert feed.read_context(digest) is not None
+    monkeypatch.setattr(feed, "delete_context",
+                        lambda digest, timeout_ms=1000: False)
+
+    _, failures = service.disable(enabled_user)
+
+    assert "context" not in failures
+    context = feed.read_context(digest)
+    assert context is not None
+    assert context.is_usable(clock.now()) is False
+
+
+def test_clear_expires_context_when_delete_fails(
+        service, feed, clock, enabled_user, monkeypatch):
+    service.remember(enabled_user, "喜欢温柔")
+    digest = user_key_hash(enabled_user)
+    monkeypatch.setattr(feed, "delete_context",
+                        lambda digest, timeout_ms=1000: False)
+
+    _, failures = service.clear(enabled_user)
+
+    assert "context" not in failures
+    context = feed.read_context(digest)
+    assert context is not None
+    assert context.is_usable(clock.now()) is False
+
+
+def test_disabled_event_does_not_rewrite_valid_tombstone(
+        service, feed, clock, make_event, monkeypatch):
+    user = "aiocqhttp:777"
+    service.startup()
+    service.enable(user)
+    service.disable(user)
+    calls = []
+    monkeypatch.setattr(feed, "write_auth", lambda auth: calls.append(auth))
+
+    feed.write_event(make_event("01J1", user))
+
+    assert service.consume_pending(clock.now()) == 0
+    assert calls == []
+
+
+def test_enroll_failure_keeps_event_for_retry(
+        service, feed, clock, make_event, monkeypatch):
+    service.startup()
+    feed.write_event(make_event("01J1", "aiocqhttp:777"))
+
+    def boom(user_key, now):
+        raise RuntimeError("database down")
+
+    monkeypatch.setattr(service.store, "enroll_user", boom)
+
+    assert service.consume_pending(clock.now()) == 0
+    assert feed.event_path("01J1").exists()

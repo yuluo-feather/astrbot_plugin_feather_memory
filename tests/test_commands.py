@@ -125,7 +125,7 @@ def test_clear_requires_confirmation(service, clock):
     first = handle_command(service, USER, True, "清空")
     assert first.startswith("确认清空")
     assert handle_command(service, USER, True, "清空 确认") == (
-        "已清空你的羽忆数据；只删除已有数据，之后仍会继续记录；"
+        "已清空你的羽忆数据。只删除已有数据，之后仍会继续记录；"
         "要停止请发送 /羽忆 关闭。")
 
 
@@ -143,13 +143,25 @@ def test_standalone_confirm_clears(service):
     handle_command(service, USER, True, "记住 喜欢温柔")
     assert handle_command(service, USER, True, "清空").startswith("确认清空你的")
     assert handle_command(service, USER, True, "确认") == (
-        "已清空你的羽忆数据；只删除已有数据，之后仍会继续记录；"
+        "已清空你的羽忆数据。只删除已有数据，之后仍会继续记录；"
         "要停止请发送 /羽忆 关闭。")
 
 
 def test_confirm_without_request(service):
     service.startup()
     assert handle_command(service, USER, True, "确认") == "没有待确认或已过期的清空请求；发送 /羽忆 清空 重新发起。"
+
+
+def test_clear_opt_out_user_reports_no_recording(service):
+    service.startup()
+    assert handle_command(service, USER, True, "清空").startswith("确认清空")
+    reply = handle_command(service, USER, True, "确认")
+    assert reply.startswith("已清空你的羽忆数据。")
+    assert "当前未开启自动记录" in reply
+    row = service.user_state(USER)
+    assert (row["enabled"], row["auto_history"], row["store_topic"]) == (0, 0, 0)
+    auth = service.feed.read_auth(user_key_hash(USER))
+    assert auth is not None and auth.auto_history is False
 
 
 def test_forget_accepts_hash_prefix(service):
@@ -171,6 +183,8 @@ def test_disable_failure_message(service, feed, monkeypatch, enabled_user):
 def test_clear_failure_message(service, feed, monkeypatch, enabled_user):
     service.remember(enabled_user, "喜欢温柔")
     monkeypatch.setattr(feed, "delete_context",
+                        lambda digest, timeout_ms=1000: False)
+    monkeypatch.setattr(feed, "expire_context",
                         lambda digest, timeout_ms=1000: False)
     assert handle_command(service, enabled_user, True, "清空").startswith("确认清空")
     reply = handle_command(service, enabled_user, True, "清空 确认")
