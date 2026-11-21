@@ -597,6 +597,29 @@ class MemoryService:
                              failures, self._tag(user_key))
         return removed, failures
 
+    def _cleanup_exports(self, user_key: str, failures: list[str]) -> None:
+        """清空时一并删除该用户导出到 exports/ 的副本。"""
+        try:
+            names = self.store.take_exports(user_key)
+        except Exception as exc:
+            self.log.warning("导出索引读取失败：%s", exc)
+            failures.append("exports")
+            return
+        directory = self.store.path.parent / "exports"
+        failed = False
+        for name in names:
+            if Path(name).name != name:
+                continue
+            try:
+                (directory / name).unlink()
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                failed = True
+                self.log.warning("删除导出文件失败：%s", exc)
+        if failed:
+            failures.append("exports")
+
     def disable(self, user_key: str) -> tuple[int, list[str]]:
         with self._state_transition():
             now = self.clock()
@@ -613,6 +636,7 @@ class MemoryService:
             self.store.ensure_user(user_key, now)
             self.store.clear_user_data(user_key, now)
             removed, failures = self._cleanup_user_files(user_key, now)
+            self._cleanup_exports(user_key, failures)
             self._clear_pending.pop(user_key, None)
             self.log.info("开关：clear(%s)，清理事件 %d 条",
                           self._tag(user_key), removed)
@@ -697,40 +721,46 @@ class MemoryService:
     def export_data(self, user_key: str) -> tuple[Path, dict] | None:
         """把本人数据写到 plugin_data/feather_memory/exports/；无记录返回 None。"""
         now = self.clock()
-        user = self.store.get_user(user_key)
-        if user is None:
-            return None
-        memories = self.store.list_memories(user_key, now, limit=200)
-        suppressed = self.store.suppressed_topics(user_key)
-        topics = [topic for topic in self.store.topic_stats(user_key, now)
-                  if topic.topic_key not in suppressed]
-        payload = build_export(
-            exported_at=format_ts(now),
-            plugin_version=self.version,
-            enabled=bool(user["enabled"]),
-            auto_history=bool(user["auto_history"]),
-            store_topic=bool(user["store_topic"]),
-            memories=memories,
-            topics=topics,
-        )
-        directory = self.store.path.parent / "exports"
-        directory.mkdir(parents=True, exist_ok=True)
-        filename = f"{secrets.token_hex(6)}-{now.strftime('%Y%m%dT%H%M%SZ')}.json"
-        path = directory / filename
-        data = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
-        tmp = path.with_name(f"{path.name}.tmp-{os.getpid()}")
-        try:
-            with open(tmp, "wb") as handle:
-                handle.write(data)
-                handle.flush()
-                os.fsync(handle.fileno())
-            os.replace(tmp, path)
-        finally:
-            if tmp.exists():
-                try:
-                    tmp.unlink()
-                except OSError:
-                    pass
+        with self._state_transition():
+            user = self.store.get_user(user_key)
+            if user is None:
+                return None
+            memories = self.store.list_memories(user_key, now, limit=None)
+            suppressed = self.store.suppressed_topics(user_key)
+            topics = [topic for topic in self.store.topic_stats(user_key, now)
+                      if topic.topic_key not in suppressed]
+            payload = build_export(
+                exported_at=format_ts(now),
+                plugin_version=self.version,
+                enabled=bool(user["enabled"]),
+                auto_history=bool(user["auto_history"]),
+                store_topic=bool(user["store_topic"]),
+                memories=memories,
+                topics=topics,
+            )
+            directory = self.store.path.parent / "exports"
+            directory.mkdir(parents=True, exist_ok=True)
+            filename = f"{secrets.token_hex(6)}-{now.strftime('%Y%m%dT%H%M%SZ')}.json"
+            path = directory / filename
+            data = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+            tmp = path.with_name(f"{path.name}.tmp-{os.getpid()}")
+            self.store.add_export(user_key, filename, now)
+            try:
+                fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                with os.fdopen(fd, "wb") as handle:
+                    handle.write(data)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(tmp, path)
+            except OSError:
+                self.store.remove_export(user_key, filename)
+                raise
+            finally:
+                if tmp.exists():
+                    try:
+                        tmp.unlink()
+                    except OSError:
+                        pass
         self.log.info("导出：user=%s 记忆=%d 主题=%d",
                       self._tag(user_key), len(memories), len(topics))
         return path, payload

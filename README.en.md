@@ -60,7 +60,7 @@ Feather Memory does not touch the framework KV store and does not import Star Fe
 | ✍️ Remember | `/羽忆 记住 <text>` | Save a preference / background / goal (optional `偏好` / `背景` / `目标` prefix; enables the master switch) |
 | ✏️ Modify | `/羽忆 修改 <id> <new text>` | Modify one saved entry; keeps its id, optional prefix changes category, truncates at 160 chars |
 | 🗑️ Forget | `/羽忆 忘记 <id>` | Delete one saved entry (ids look like `#12` in the list) |
-| 🧹 Clear | `/羽忆 清空` | Clear **your own** Feather Memory data after a second confirmation (send `/羽忆 清空 确认` within 60 seconds) |
+| 🧹 Clear | `/羽忆 清空` | Clear **your own** Feather Memory data after a second confirmation, including exported copies under `exports/` (send `/羽忆 清空 确认` within 60 seconds) |
 | 🔛 Enable | `/羽忆 开启` | Turn on the master switch, auto history and topic recording in one step (one auth write) |
 | 🤖 Auto history | `/羽忆 开启 自动` | Fine-grained: allow private normal readings to feed recent topics (idempotent) |
 | 🏷️ Topic recording | `/羽忆 开启 主题` | Fine-grained: allow events to carry the fixed topic enum (idempotent, requires auto history first) |

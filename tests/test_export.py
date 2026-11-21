@@ -3,8 +3,10 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from pathlib import Path
 
+import pytest
 from data.plugins.astrbot_plugin_feather_memory.app.chat import handle_command
 from data.plugins.astrbot_plugin_feather_memory.app.service import MemoryService
 from data.plugins.astrbot_plugin_feather_memory.core.identity import user_key_hash
@@ -101,8 +103,8 @@ def test_status_shows_context_details_and_last_consumption(
     text = handle_command(service, enabled_user, True, "状态")
     assert f"revision {context.revision}" in text
     assert f"{len(context.items)} 条 / {len(context.text)} 字" in text
-    assert "生成于 2026-11-21" in text
-    assert "最近消费：2026-11-21" in text
+    assert "生成于 2026-11-21" in text and "UTC" in text
+    assert "最近消费：2026-11-21 12:00 UTC" in text
 
 
 def test_status_without_context_says_none(service, enabled_user):
@@ -175,3 +177,44 @@ def test_min_topic_count_filters_context_but_keeps_stats(
     assert [item.text for item in context.items] == ["感情（最近 2 次）"]
     stats = {(item.topic_key, item.count) for item in store.topic_stats(user, clock.now())}
     assert stats == {("工作", 1), ("感情", 2)}
+
+
+def test_clear_removes_exported_files(service):
+    service.startup()
+    service.enable(USER)
+    service.remember(USER, "偏好 温柔")
+    path = _export_path(handle_command(service, USER, True, "导出"))
+    assert path.exists()
+
+    assert handle_command(service, USER, True, "清空").startswith("确认清空")
+    assert "已清空" in handle_command(service, USER, True, "确认")
+    assert not path.exists()
+
+
+def test_disable_keeps_exported_files(service):
+    service.startup()
+    service.enable(USER)
+    service.remember(USER, "偏好 温柔")
+    path = _export_path(handle_command(service, USER, True, "导出"))
+
+    service.disable(USER)
+    assert path.exists()
+
+
+def test_export_is_not_truncated(service, clock):
+    service.startup()
+    service.enable(USER)
+    for index in range(205):
+        service.store.save_memory(
+            USER, "preference", f"记忆{index}", f"记忆{index}", clock.now())
+    exported = service.export_data(USER)
+    assert exported is not None
+    assert len(exported[1]["memories"]) == 205
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permissions only")
+def test_export_file_is_owner_only(service):
+    service.startup()
+    service.enable(USER)
+    path = _export_path(handle_command(service, USER, True, "导出"))
+    assert (path.stat().st_mode & 0o777) == 0o600

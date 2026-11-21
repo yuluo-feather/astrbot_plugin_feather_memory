@@ -29,7 +29,7 @@ def _short_ts(value: str | None) -> str:
     if not value:
         return "未知"
     try:
-        return parse_ts(value).strftime("%Y-%m-%d %H:%M")
+        return parse_ts(value).strftime("%Y-%m-%d %H:%M") + " UTC"
     except (TypeError, ValueError):
         return value
 
@@ -160,7 +160,7 @@ def handle_command(service: MemoryService, user_key: str,
         if arg == "":
             _, failures = service.disable(user_key)
             if failures:
-                return ("已关闭，但共享文件清理未完成（"
+                return ("已关闭，但文件清理未完成（"
                         + "/".join(failures)
                         + "），已标记待重试，请稍后再试或查看日志。")
             return ("已关闭羽忆：授权、记忆上下文与待处理事件已清除；"
@@ -189,7 +189,7 @@ def handle_command(service: MemoryService, user_key: str,
                     return "没有待确认或已过期的清空请求；发送 /羽忆 清空 重新发起。"
                 return "确认已过期，请重新发送 /羽忆 清空。"
             if failures:
-                return ("已清空，但共享文件清理未完成（"
+                return ("已清空，但文件清理未完成（"
                         + "/".join(failures)
                         + "），已标记待重试，请稍后再试或查看日志。")
             return "已清空你的羽忆数据，并关闭自动历史与主题记录。"
@@ -207,7 +207,7 @@ def handle_command(service: MemoryService, user_key: str,
         return (f"已导出你的羽忆数据：{len(payload['memories'])} 条主动保存，"
                 f"{len(payload['recent_topics'])} 个近期主题。\n"
                 f"文件：{path}\n"
-                "文件不含账号标识与原始占卜问题。")
+                "发送 /羽忆 清空 会一并删除导出副本；文件不含账号标识与原始占卜问题。")
 
     if not service.global_enabled:
         if sub == "状态":

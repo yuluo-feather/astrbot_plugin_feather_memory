@@ -19,7 +19,7 @@ def _count(store, table: str) -> int:
 
 def test_initialize_sets_user_version_and_is_idempotent(store):
     with sqlite3.connect(store.path) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
         assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
     store.initialize()
 
@@ -42,7 +42,7 @@ def test_migrates_v1_users_table(tmp_path):
     with sqlite3.connect(path) as conn:
         columns = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
         assert "disabled_at" in columns
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
 
 
 def test_unsupported_user_version_rejected(tmp_path):
@@ -52,9 +52,25 @@ def test_unsupported_user_version_rejected(tmp_path):
 
     path = tmp_path / "future.sqlite3"
     with sqlite3.connect(path) as conn:
-        conn.execute("PRAGMA user_version = 3")
+        conn.execute("PRAGMA user_version = 4")
     with pytest.raises(RuntimeError):
         SqliteStore(path).initialize()
+
+
+def test_migrates_v2_adds_exports_table(tmp_path):
+    from data.plugins.astrbot_plugin_feather_memory.adapters.sqlite_store import (
+        SqliteStore,
+    )
+
+    path = tmp_path / "v2.sqlite3"
+    with sqlite3.connect(path) as conn:
+        conn.execute("PRAGMA user_version = 2")
+    SqliteStore(path).initialize()
+    with sqlite3.connect(path) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 3
+        tables = {row[0] for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table'")}
+        assert "exports" in tables
 
 
 def test_concurrent_inserts_do_not_lose_committed(store, clock, make_event):
