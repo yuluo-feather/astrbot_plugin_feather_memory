@@ -212,6 +212,71 @@ def test_cleanup_removes_expired_and_old(feed, clock, make_event):
     assert feed.read_lease() is None
 
 
+def test_cleanup_skips_locked_expired_context(feed, clock):
+    digest = user_key_hash("aiocqhttp:1")
+    feed.write_context(digest, _context(clock, 1, expires_in_days=-1))
+    lock_path = feed.layout.context_dir / f"{digest}.lock"
+    with FileLock(lock_path, timeout_ms=1000):
+        feed.cleanup(clock.now())
+    assert feed.read_context(digest) is not None
+    feed.cleanup(clock.now())
+    assert feed.read_context(digest) is None
+
+
+def test_cleanup_skips_locked_expired_auth(feed, clock):
+    auth = _auth(clock, "aiocqhttp:1")
+    expired = Auth(
+        user_key_hash=auth.user_key_hash,
+        generated_at=auth.generated_at,
+        expires_at=format_ts(clock.now() - timedelta(days=1)),
+        auto_history=True, store_topic=False, source=auth.source)
+    feed.write_auth(expired)
+    with FileLock(feed.auth_lock_path(expired.user_key_hash), timeout_ms=1000):
+        feed.cleanup(clock.now())
+    assert feed.read_auth(expired.user_key_hash) is not None
+    feed.cleanup(clock.now())
+    assert feed.read_auth(expired.user_key_hash) is None
+
+
+def test_cleanup_skips_locked_stale_lease(feed, clock):
+    feed.write_lease(_lease(clock, "A", expires_in=-2 * 86400))
+    with FileLock(feed.layout.lease_lock_path, timeout_ms=1000):
+        feed.cleanup(clock.now())
+    assert feed.read_lease() is not None
+    feed.cleanup(clock.now())
+    assert feed.read_lease() is None
+
+
+def test_cleanup_rereads_fresh_context_after_lock(feed, clock):
+    digest = user_key_hash("aiocqhttp:1")
+    feed.write_context(digest, _context(clock, 1, expires_in_days=-1))
+    lock_path = feed.layout.context_dir / f"{digest}.lock"
+    with FileLock(lock_path, timeout_ms=1000):
+        feed.cleanup(clock.now())
+        feed._write_json(feed.context_path(digest),
+                         _context(clock, 2, expires_in_days=30).to_dict(),
+                         8 * 1024)
+    feed.cleanup(clock.now())
+    context = feed.read_context(digest)
+    assert context is not None and context.revision == 2
+
+
+def test_cleanup_rereads_fresh_auth_after_lock(feed, clock):
+    auth = _auth(clock, "aiocqhttp:1")
+    expired = Auth(
+        user_key_hash=auth.user_key_hash,
+        generated_at=auth.generated_at,
+        expires_at=format_ts(clock.now() - timedelta(days=1)),
+        auto_history=True, store_topic=False, source=auth.source)
+    feed.write_auth(expired)
+    with FileLock(feed.auth_lock_path(expired.user_key_hash), timeout_ms=1000):
+        feed.cleanup(clock.now())
+        feed._write_json(feed.auth_path(expired.user_key_hash),
+                         _auth(clock, "aiocqhttp:1").to_dict(), 4 * 1024)
+    feed.cleanup(clock.now())
+    assert feed.read_auth(expired.user_key_hash) is not None
+
+
 def test_write_event_is_valid_json(feed, make_event):
     event = make_event("01JJSON")
     feed.write_event(event)

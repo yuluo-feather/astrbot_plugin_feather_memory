@@ -11,6 +11,7 @@ data/plugin_data/_shared/feather_memory/v1/
 ├── lease.json                  # 羽忆写，核心读
 ├── state.lock                  # 羽忆写/锁：跨进程状态转换串行化
 ├── auth/{sha256(user_key)}.json
+├── auth/{sha256(user_key)}.lock
 ├── events/{event_id}.json      # 核心写，羽忆读
 ├── context/{sha256(user_key)}.json
 └── context/{sha256(user_key)}.lock
@@ -55,6 +56,7 @@ data/plugin_data/_shared/feather_memory/v1/
 - 核心写事件前依次检查：租约有效 → 授权文件存在、未过期、schema 相符 → `auto_history=true`。
 - `store_topic=false` 时核心必须写空 `topic_key`。
 - 羽忆在启动、用户命令、每日维护时刷新；用户关闭 / 清空时删除。
+- `auth/{sha}.json` 的写入、删除与清扫共用 `auth/{sha}.lock`；清扫在锁内重新解析 `expires_at` 后再删。
 
 ## 3. 事件 `star_feather.reading_event.v1`
 
@@ -167,6 +169,9 @@ PENDING
 - 租约：`expires_at` 超过 1 天则删除。
 - 启动时一次；之后每小时一次；失败只 warning，不影响占卜。
 - 清扫不受全局 `memory.enabled` 限制：关闭时仍清理过期共享文件与超窗占卜记录。
+- auth / context / lease 的清扫在各自锁内重新读取并判断过期后再删；事件按 mtime 清扫。
+- 星羽核心只清扫事件，不再删除 auth / context / lease；这三类由羽忆负责。
+- `disable` / `clear` 的 auth、context、事件清理各自独立失败；命令如实回报未完成项，关闭用户的共享文件由每小时维护重试。
 - `context/*.lock`、`state.lock`、`lease.lock` 是持久协调文件，不含记忆正文；清扫只处理 `.json`，锁文件可随目录手动删除。
 
 ## 9. 数据保留

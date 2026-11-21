@@ -461,6 +461,55 @@ def test_update_memory_truncates(service, enabled_user):
     assert memories[0].content == "长" * 160
 
 
+def test_disable_collects_failures_and_retries(
+        service, feed, monkeypatch, enabled_user, make_event):
+    feed.write_event(make_event("01J1", enabled_user))
+    calls = {"auth": 0, "context": 0}
+
+    def fail_auth(digest):
+        calls["auth"] += 1
+        return False
+
+    def fail_context(digest, timeout_ms=1000):
+        calls["context"] += 1
+        return False
+
+    monkeypatch.setattr(feed, "delete_auth", fail_auth)
+    monkeypatch.setattr(feed, "delete_context", fail_context)
+    removed, failures = service.disable(enabled_user)
+    assert removed == 1
+    assert failures == ["auth", "context"]
+    assert calls == {"auth": 2, "context": 2}
+    assert feed.iter_events() == []
+    assert service.user_state(enabled_user)["context_dirty"] == 1
+
+
+def test_clear_collects_auth_failure(service, feed, monkeypatch, enabled_user):
+    service.remember(enabled_user, "喜欢温柔")
+    monkeypatch.setattr(feed, "delete_auth", lambda digest: False)
+    removed, failures = service.clear(enabled_user)
+    assert removed == 0
+    assert failures == ["auth"]
+    assert service.store.count_memories(enabled_user) == 0
+
+
+def test_prefix_requires_separator(service, enabled_user):
+    for text in ("背景知识很重要", "目标导向思维", "偏好关系分析"):
+        memory_id, _ = service.remember(enabled_user, text)
+        memories, _ = service.list_display(enabled_user)
+        entry = next(item for item in memories if item.memory_id == memory_id)
+        assert entry.category == "preference"
+        assert entry.content == text
+    memory_id, _ = service.remember(enabled_user, "背景：学生")
+    memories, _ = service.list_display(enabled_user)
+    entry = next(item for item in memories if item.memory_id == memory_id)
+    assert (entry.category, entry.content) == ("background", "学生")
+    assert service.update_memory(enabled_user, memory_id, "背景知识很重要") == ("ok", False)
+    memories, _ = service.list_display(enabled_user)
+    entry = next(item for item in memories if item.memory_id == memory_id)
+    assert (entry.category, entry.content) == ("background", "背景知识很重要")
+
+
 def test_stats_is_read_only_counts(service, feed, make_event, enabled_user):
     service.remember(enabled_user, "喜欢温柔")
     feed.write_event(make_event("01JSTAT", enabled_user))

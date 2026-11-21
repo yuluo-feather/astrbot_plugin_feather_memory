@@ -154,6 +154,9 @@ class MemoryFeed:
     def auth_path(self, user_key_hash: str) -> Path:
         return self.layout.auth_dir / f"{user_key_hash}.json"
 
+    def auth_lock_path(self, user_key_hash: str) -> Path:
+        return self.layout.auth_dir / f"{user_key_hash}.lock"
+
     def read_auth(self, user_key_hash: str) -> Auth | None:
         try:
             return Auth.parse(self._read_json(self.auth_path(user_key_hash), AUTH_MAX_BYTES))
@@ -161,14 +164,23 @@ class MemoryFeed:
             return None
 
     def write_auth(self, auth: Auth) -> None:
-        self._write_json(self.auth_path(auth.user_key_hash), auth.to_dict(), AUTH_MAX_BYTES)
+        with FileLock(self.auth_lock_path(auth.user_key_hash), timeout_ms=1000):
+            self._write_json(self.auth_path(auth.user_key_hash),
+                             auth.to_dict(), AUTH_MAX_BYTES)
 
     def delete_auth(self, user_key_hash: str) -> bool:
+        """删除后不存在即成功（原本不存在也算）；锁超时/IO 失败返回 False。"""
         try:
-            self.auth_path(user_key_hash).unlink()
-        except FileNotFoundError:
+            with FileLock(self.auth_lock_path(user_key_hash), timeout_ms=1000):
+                try:
+                    self.auth_path(user_key_hash).unlink()
+                except FileNotFoundError:
+                    return True
+                except OSError:
+                    return False
+                return True
+        except (LockTimeout, OSError):
             return False
-        return True
 
     # ---- events --------------------------------------------------------
 
@@ -318,47 +330,39 @@ class MemoryFeed:
                     removed["events"] += 1
             except OSError:
                 continue
-        for directory, parser, key in (
-            (self.layout.auth_dir, Auth.parse, "auth"),
-            (self.layout.context_dir, MemoryContext.parse, "context"),
-        ):
-            for path in directory.glob("*.json"):
-                try:
-                    before = path.stat()
-                    payload = self._read_json(
-                        path, AUTH_MAX_BYTES if key == "auth" else CONTEXT_MAX_BYTES)
-                    parsed = parser(payload)
-                except (OSError, ContractError):
-                    continue
-                if not _expired(parsed, now):
-                    continue
-                try:
-                    after = path.stat()
-                except OSError:
-                    continue
-                if (before.st_mtime_ns, before.st_size) != (after.st_mtime_ns, after.st_size):
-                    continue  # 读取后被新文件替换：不删新文件
-                try:
-                    path.unlink()
-                    removed[key] += 1
-                except OSError:
-                    continue
-        lease_path = self.layout.lease_path
+        for path in self.layout.auth_dir.glob("*.json"):
+            try:
+                with FileLock(self.auth_lock_path(path.stem), timeout_ms=500):
+                    payload = self._read_json(path, AUTH_MAX_BYTES)
+                    parsed = Auth.parse(payload)
+                    if _expired(parsed, now):
+                        path.unlink()
+                        removed["auth"] += 1
+            except (LockTimeout, OSError, ContractError):
+                continue
+        for path in self.layout.context_dir.glob("*.json"):
+            lock_path = self.layout.context_dir / f"{path.stem}.lock"
+            try:
+                with FileLock(lock_path, timeout_ms=500):
+                    payload = self._read_json(path, CONTEXT_MAX_BYTES)
+                    parsed = MemoryContext.parse(payload)
+                    if _expired(parsed, now):
+                        path.unlink()
+                        removed["context"] += 1
+            except (LockTimeout, OSError, ContractError):
+                continue
         try:
-            before = lease_path.stat()
-            lease = self.read_lease()
-            stale_after = None
-            if lease is not None:
-                try:
-                    stale_after = parse_ts(lease.expires_at) + timedelta(days=1)
-                except ValueError:
-                    stale_after = None
-            after = lease_path.stat()
-            if (stale_after is not None and now > stale_after
-                    and (before.st_mtime_ns, before.st_size)
-                    == (after.st_mtime_ns, after.st_size)):
-                lease_path.unlink()
-                removed["lease"] += 1
-        except (OSError, ValueError):
+            with FileLock(self.layout.lease_lock_path, timeout_ms=500):
+                lease = self.read_lease()
+                stale_after = None
+                if lease is not None:
+                    try:
+                        stale_after = parse_ts(lease.expires_at) + timedelta(days=1)
+                    except ValueError:
+                        stale_after = None
+                if stale_after is not None and now > stale_after:
+                    self.layout.lease_path.unlink()
+                    removed["lease"] += 1
+        except (LockTimeout, OSError):
             pass
         return removed

@@ -144,7 +144,11 @@ def handle_command(service: MemoryService, user_key: str,
 
     def _close() -> str:
         if arg == "":
-            service.disable(user_key)
+            _, failures = service.disable(user_key)
+            if failures:
+                return ("已关闭，但共享文件清理未完成（"
+                        + "/".join(failures)
+                        + "），已标记待重试，请稍后再试或查看日志。")
             return ("已关闭羽忆：授权、记忆上下文与待处理事件已清除；"
                     "已保存的记忆仍保留，发送 /羽忆 清空 可彻底删除。")
         if arg == "自动":
@@ -165,11 +169,16 @@ def handle_command(service: MemoryService, user_key: str,
 
     def _clear() -> str:
         if sub == "确认" or arg == "确认":
-            if service.confirm_clear(user_key):
-                return "已清空你的羽忆数据，并关闭自动历史与主题记录。"
-            if sub == "确认":
-                return "没有待确认或已过期的清空请求；发送 /羽忆 清空 重新发起。"
-            return "确认已过期，请重新发送 /羽忆 清空。"
+            failures = service.confirm_clear(user_key)
+            if failures is None:
+                if sub == "确认":
+                    return "没有待确认或已过期的清空请求；发送 /羽忆 清空 重新发起。"
+                return "确认已过期，请重新发送 /羽忆 清空。"
+            if failures:
+                return ("已清空，但共享文件清理未完成（"
+                        + "/".join(failures)
+                        + "），已标记待重试，请稍后再试或查看日志。")
+            return "已清空你的羽忆数据，并关闭自动历史与主题记录。"
         service.request_clear(user_key)
         return ("确认清空你的全部羽忆数据？60 秒内发送 /羽忆 清空 确认 执行。")
 

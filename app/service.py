@@ -50,16 +50,27 @@ _CATEGORY_PREFIXES = (
     ("背景", "background"),
     ("目标", "goal"),
 )
+_PREFIX_SEPARATORS = " ：:，,"
+
+
+def _split_category_prefix(text: str) -> tuple[str | None, str]:
+    """只有前缀后紧跟分隔符才算分类；否则整段都是内容。"""
+    for prefix, category in _CATEGORY_PREFIXES:
+        if not text.startswith(prefix) or len(text) == len(prefix):
+            continue
+        if text[len(prefix)] not in _PREFIX_SEPARATORS:
+            continue
+        rest = text[len(prefix) + 1:].lstrip(" ：:，,")
+        return category, rest
+    return None, text
 
 
 def parse_memory_input(raw: str) -> tuple[str, str]:
     text = " ".join((raw or "").split())
     if not text:
         return "preference", ""
-    for prefix, category in _CATEGORY_PREFIXES:
-        if text.startswith(prefix):
-            return category, text[len(prefix):].lstrip("：:，, ")
-    return "preference", text
+    category, content = _split_category_prefix(text)
+    return (category or "preference"), content
 
 
 def normalize_content(content: str) -> str:
@@ -414,7 +425,7 @@ class MemoryService:
         )
         try:
             self.feed.write_auth(auth)
-        except (OSError, ContractError) as exc:
+        except (OSError, ContractError, LockTimeout) as exc:
             self.log.warning("授权文件写入失败：%s", exc)
             return False
         return True
@@ -440,6 +451,18 @@ class MemoryService:
                 self.store.purge_readings(user["user_key"], now)
             except Exception as exc:
                 self.log.warning("清理占卜记录失败：%s", exc)
+            if not user["enabled"]:
+                # 关闭时的共享文件清理若失败，由每小时维护重试。
+                try:
+                    if not self.feed.delete_auth(user_key_hash(user["user_key"])):
+                        self.log.warning("重试删除授权失败：user=%s",
+                                         self._tag(user["user_key"]))
+                except OSError as exc:
+                    self.log.warning("重试删除授权失败：%s", exc)
+                try:
+                    self.feed.remove_events_for_user(user["user_key"])
+                except OSError as exc:
+                    self.log.warning("重试清理事件失败：%s", exc)
         if self.global_enabled:
             for user in self.store.dirty_users():
                 self.rebuild_context(user["user_key"], now)
@@ -530,42 +553,74 @@ class MemoryService:
             self.log.info("开关：topic(%s)=0", self._tag(user_key))
             return "ok" if auth_ok else "auth_failed"
 
-    def disable(self, user_key: str) -> int:
+    def _cleanup_user_files(self, user_key: str,
+                            now: datetime) -> tuple[int, list[str]]:
+        """删除 auth / context / 事件；每步独立失败，返回未完成项。"""
+        failures: list[str] = []
+        digest = user_key_hash(user_key)
+        auth_ok = False
+        for _ in range(2):
+            try:
+                if self.feed.delete_auth(digest):
+                    auth_ok = True
+                    break
+            except OSError as exc:
+                self.log.warning("删除授权失败：%s", exc)
+        if not auth_ok:
+            failures.append("auth")
+
+        context_ok = False
+        for _ in range(2):
+            if self._drop_context(user_key, now):
+                context_ok = True
+                break
+        if not context_ok:
+            failures.append("context")
+
+        removed = 0
+        try:
+            removed = self.feed.remove_events_for_user(user_key)
+        except OSError as exc:
+            self.log.warning("清理待处理事件失败：%s", exc)
+            failures.append("events")
+
+        if failures:
+            self.log.warning("共享文件清理未完成：%s user=%s",
+                             failures, self._tag(user_key))
+        return removed, failures
+
+    def disable(self, user_key: str) -> tuple[int, list[str]]:
         with self._state_transition():
             now = self.clock()
             self.store.ensure_user(user_key, now)
             self.store.disable_user(user_key, now)
-            self.feed.delete_auth(user_key_hash(user_key))
-            if self._drop_context(user_key, now):
-                self.store.set_context_dirty(user_key, False, now)
-            removed = self.feed.remove_events_for_user(user_key)
-            self.log.info("开关：disable(%s)，清理事件 %d 条", self._tag(user_key), removed)
-            return removed
+            removed, failures = self._cleanup_user_files(user_key, now)
+            self.log.info("开关：disable(%s)，清理事件 %d 条",
+                          self._tag(user_key), removed)
+            return removed, failures
 
-    def clear(self, user_key: str) -> int:
+    def clear(self, user_key: str) -> tuple[int, list[str]]:
         with self._state_transition():
             now = self.clock()
             self.store.ensure_user(user_key, now)
             self.store.clear_user_data(user_key, now)
-            self.feed.delete_auth(user_key_hash(user_key))
-            if self._drop_context(user_key, now):
-                self.store.set_context_dirty(user_key, False, now)
-            removed = self.feed.remove_events_for_user(user_key)
+            removed, failures = self._cleanup_user_files(user_key, now)
             self._clear_pending.pop(user_key, None)
-            self.log.info("开关：clear(%s)，清理事件 %d 条", self._tag(user_key), removed)
-            return removed
+            self.log.info("开关：clear(%s)，清理事件 %d 条",
+                          self._tag(user_key), removed)
+            return removed, failures
 
     def request_clear(self, user_key: str) -> None:
         self._clear_pending[user_key] = self.clock()
 
-    def confirm_clear(self, user_key: str) -> bool:
+    def confirm_clear(self, user_key: str) -> list[str] | None:
         started = self._clear_pending.pop(user_key, None)
         if started is None:
-            return False
+            return None
         if (self.clock() - started).total_seconds() > CLEAR_CONFIRM_SECONDS:
-            return False
-        self.clear(user_key)
-        return True
+            return None
+        _, failures = self.clear(user_key)
+        return failures
 
     def remember(self, user_key: str, raw: str) -> tuple[int, bool]:
         category, content = parse_memory_input(raw)
@@ -599,12 +654,7 @@ class MemoryService:
     def update_memory(self, user_key: str, memory_id: int,
                       raw: str) -> tuple[str, bool]:
         text = " ".join((raw or "").split())
-        category_hint = None
-        for prefix, category in _CATEGORY_PREFIXES:
-            if text.startswith(prefix):
-                category_hint = category
-                text = text[len(prefix):].lstrip("：:，, ")
-                break
+        category_hint, text = _split_category_prefix(text)
         if not text:
             return "empty", False
         truncated = len(text) > MAX_MEMORY_CHARS

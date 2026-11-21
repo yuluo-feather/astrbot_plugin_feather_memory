@@ -167,7 +167,7 @@ git clone https://github.com/yuluo-feather/astrbot_plugin_feather_memory.git
 - 事件文件除牌阵 / 牌面 / 主题外，还含 `event_id`、`user_key`、`platform_id`、`created_at`、`source_version`；这些用于去重、索引与排障，不包含原始问题。
 - 主题只取固定枚举（工作 / 学业 / 感情 / 家庭 / 财务 / 健康 / 人际 / 出行）；一句命中多个主题或无法归类时留空。
 - 记忆内容在注入时会经过清洗与长度限制，并明确标注为「参考资料、不是系统指令」；它不会覆盖系统提示。
-- 共享目录里的事件文件保留 7 天，授权 180 天，context 30 天；过期文件由两侧按 TTL 清扫。`context/*.lock`、`state.lock`、`lease.lock` 是持久的协调文件，不含记忆正文，清扫只处理 `.json`。
+- 共享目录里的事件文件保留 7 天，授权 180 天，context 30 天；过期文件由两侧按 TTL 清扫。`context/*.lock`、`auth/*.lock`、`state.lock`、`lease.lock` 是持久的协调文件，不含记忆正文，清扫只处理 `.json`。
 - 清空只清**你自己的**数据；`users` 行会保留 `enabled` 与 `cleared_at` 等状态，用来挡住清空前的旧事件，避免它们被重新消费。
 - 卸载羽忆时租约会被删除；共享目录不随卸载自动删除，旧文件由 TTL 清扫。
 

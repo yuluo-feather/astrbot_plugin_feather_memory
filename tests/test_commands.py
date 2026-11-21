@@ -155,6 +155,20 @@ def test_forget_accepts_hash_prefix(service):
     assert handle_command(service, USER, True, "忘记 #1") == "已删除 #1。"
 
 
+def test_disable_failure_message(service, feed, monkeypatch, enabled_user):
+    monkeypatch.setattr(feed, "delete_auth", lambda digest: False)
+    reply = handle_command(service, enabled_user, True, "关闭")
+    assert reply.startswith("已关闭，但共享文件清理未完成（auth")
+
+
+def test_clear_failure_message(service, feed, monkeypatch, enabled_user):
+    service.remember(enabled_user, "喜欢温柔")
+    monkeypatch.setattr(feed, "delete_auth", lambda digest: False)
+    assert handle_command(service, enabled_user, True, "清空").startswith("确认清空")
+    reply = handle_command(service, enabled_user, True, "清空 确认")
+    assert reply.startswith("已清空，但共享文件清理未完成（auth")
+
+
 def test_list_footer_has_delete_and_modify(service):
     service.startup()
     service.enable(USER)
