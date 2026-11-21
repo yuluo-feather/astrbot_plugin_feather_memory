@@ -12,7 +12,7 @@ from data.plugins.astrbot_plugin_feather_memory.adapters.memory_feed import (
 from data.plugins.astrbot_plugin_feather_memory.app.service import MemoryService
 from data.plugins.astrbot_plugin_feather_memory.core.contracts import Auth
 from data.plugins.astrbot_plugin_feather_memory.core.identity import user_key_hash
-from data.plugins.astrbot_plugin_feather_memory.core.timeutil import format_ts
+from data.plugins.astrbot_plugin_feather_memory.core.timeutil import format_ts, parse_ts
 
 
 def _activate(service, user_key="aiocqhttp:123456"):
@@ -220,9 +220,10 @@ def test_disable_writes_tombstone_and_clears_context_events(
     assert auth is not None
     assert auth.user_key_hash == digest
     assert auth.auto_history is False and auth.store_topic is False
+    row = service.user_state(enabled_user)
+    assert auth.context_valid_after == format_ts(parse_ts(row["disabled_at"]))
     assert feed.read_context(digest) is None
     assert feed.iter_events() == []
-    row = service.user_state(enabled_user)
     assert (row["enabled"], row["auto_history"], row["store_topic"]) == (0, 0, 0)
     assert service.store.count_memories(enabled_user) == 1
 
@@ -642,17 +643,33 @@ def test_duplicate_event_does_not_reenable_disabled_user(
     assert not feed.event_path("01J1").exists()
 
 
-def test_clear_keeps_auth_and_switches(service, feed, clock, enabled_user):
+def test_clear_keeps_switches_and_writes_cutoff(service, feed, clock, enabled_user):
     before = feed.read_auth(user_key_hash(enabled_user))
     service.remember(enabled_user, "喜欢温柔")
 
     service.clear(enabled_user)
 
     after = feed.read_auth(user_key_hash(enabled_user))
-    assert after is not None and after == before
     row = service.user_state(enabled_user)
+    assert before is not None and after is not None
+    assert after.user_key_hash == before.user_key_hash
+    assert after.auto_history is True and after.store_topic is True
+    assert after.context_valid_after == format_ts(parse_ts(row["cleared_at"]))
     assert (row["enabled"], row["auto_history"], row["store_topic"]) == (1, 1, 1)
     assert service.store.count_memories(enabled_user) == 0
+
+
+def test_reenabled_context_is_after_cutoff(service, feed, clock, enabled_user):
+    service.disable(enabled_user)
+    clock.advance(seconds=1)
+    service.enable(enabled_user)
+    service.remember(enabled_user, "喜欢温柔")
+
+    auth = feed.read_auth(user_key_hash(enabled_user))
+    context = feed.read_context(user_key_hash(enabled_user))
+    assert auth is not None and auth.context_valid_after
+    assert context is not None
+    assert parse_ts(context.generated_at) > parse_ts(auth.context_valid_after)
 
 
 def test_clear_disabled_user_keeps_tombstone(service, feed, clock):

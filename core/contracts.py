@@ -158,9 +158,10 @@ class Auth:
     auto_history: bool
     store_topic: bool
     source: str
+    context_valid_after: str = ""
 
     def to_dict(self) -> dict:
-        return {
+        payload = {
             "schema": SCHEMA_AUTH,
             "user_key_hash": self.user_key_hash,
             "generated_at": self.generated_at,
@@ -169,6 +170,9 @@ class Auth:
             "store_topic": self.store_topic,
             "source": self.source,
         }
+        if self.context_valid_after:
+            payload["context_valid_after"] = self.context_valid_after
+        return payload
 
     def is_valid(self, now) -> bool:
         try:
@@ -179,6 +183,15 @@ class Auth:
     @classmethod
     def parse(cls, payload: object) -> "Auth":
         data = _schema_of(payload, SCHEMA_AUTH)
+        cutoff = data.get("context_valid_after", "")
+        if not isinstance(cutoff, str):
+            raise ContractError(f"{SCHEMA_AUTH}: field 'context_valid_after' must be a string")
+        if cutoff:
+            try:
+                parse_ts(cutoff)
+            except ValueError:
+                raise ContractError(
+                    f"{SCHEMA_AUTH}: field 'context_valid_after' is not a valid timestamp") from None
         return cls(
             user_key_hash=_hash(_str(data, "user_key_hash", SCHEMA_AUTH), SCHEMA_AUTH),
             generated_at=_ts(data, "generated_at", SCHEMA_AUTH),
@@ -186,6 +199,7 @@ class Auth:
             auto_history=_bool(data, "auto_history", SCHEMA_AUTH),
             store_topic=_bool(data, "store_topic", SCHEMA_AUTH),
             source=_str(data, "source", SCHEMA_AUTH),
+            context_valid_after=cutoff,
         )
 
 

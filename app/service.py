@@ -119,6 +119,22 @@ class MemoryService:
         """日志只留身份摘要前 8 位，不打完整 uid。"""
         return user_key_hash(user_key)[:8]
 
+    @staticmethod
+    def _context_cutoff(user: dict) -> str:
+        """授权里的 context 时间门槛：清空 / 停用中较晚的一个，精确到秒。"""
+        latest: datetime | None = None
+        for key in ("cleared_at", "disabled_at"):
+            value = user.get(key) or ""
+            if not value:
+                continue
+            try:
+                moment = parse_ts(value)
+            except ValueError:
+                continue
+            if latest is None or moment > latest:
+                latest = moment
+        return format_ts(latest) if latest is not None else ""
+
     @contextmanager
     def _state_transition(self):
         """进程内 RLock + 跨进程 state.lock；锁序 state → context。"""
@@ -134,8 +150,9 @@ class MemoryService:
         self.store.initialize()
         now = self.clock()
         if self.global_enabled:
-            self._refresh_lease(now)
+            # 先对账授权（含墓碑），再暴露租约的 auto_enroll，避免旧停用用户被误提示。
             self.refresh_auth_all(now)
+            self._refresh_lease(now)
             self.consume_pending(now)
             self.rebuild_all_contexts(now)
         self.cleanup(now)
@@ -465,6 +482,7 @@ class MemoryService:
             auto_history=bool(user["auto_history"]) if enabled else False,
             store_topic=bool(user["store_topic"]) if enabled else False,
             source=self.source,
+            context_valid_after=self._context_cutoff(user),
         )
         try:
             self.feed.write_auth(auth)
@@ -675,11 +693,9 @@ class MemoryService:
             self.store.clear_user_data(user_key, now)
             removed, failures = self._cleanup_context_and_events(user_key, now)
             self._cleanup_exports(user_key, failures)
-            user = self.store.get_user(user_key)
-            if user is not None and not user["enabled"]:
-                # 未开启的用户清空后仍是 opt-out：补墓碑，避免星羽误发首次提示。
-                if not self._refresh_auth_impl(user_key, now):
-                    failures.append("auth")
+            # 清空后刷新一次授权并写入 context 时间门槛；开关与启用状态保持原值。
+            if not self._refresh_auth_impl(user_key, now):
+                failures.append("auth")
             self._clear_pending.pop(user_key, None)
             self.log.info("开关：clear(%s)，清理事件 %d 条",
                           self._tag(user_key), removed)

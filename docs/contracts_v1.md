@@ -54,8 +54,10 @@ data/plugin_data/_shared/feather_memory/v1/
 | `auto_history` | bool | 是否允许核心写事件 |
 | `store_topic` | bool | 是否允许事件携带 `topic_key` |
 | `source` | string | `feather_memory/{version}` |
+| `context_valid_after` | string（可选） | UTC ISO-8601 `Z`；`context.generated_at <= 该值` 时核心不得注入；缺失按无限制处理（旧授权兼容） |
 
 - 核心写事件前依次检查：租约有效 → 授权文件存在、未过期、schema 相符 → `auto_history=true`。
+- `context_valid_after` 取用户 `cleared_at` 与 `disabled_at` 中较晚的一个，精确到秒；两者都为空时省略字段。清空与关闭都会刷新授权写入该门槛；每日刷新保持原值，不写成当前时间。
 - `store_topic=false` 时核心必须写空 `topic_key`。
 - 羽忆在启动、用户命令、每日维护时刷新。停用用户写「墓碑」（文件保留，`auto_history=false`、`store_topic=false`），**不删除授权文件**；这样核心不会把文件缺失当成「首次出现」，也不会再投递。
 - 清空不改变授权文件；用户仍处于开启状态，之后会继续记录。
@@ -186,7 +188,7 @@ PENDING
 
 - 占卜事件：每用户最近 **200 条 / 180 天**；主题次数只统计这个窗口。
 - 显式记忆：默认不过期；单条 ≤ 160 字。
-- 清空不删 `users` 行，也不改变 `enabled` / `auto_history` / `store_topic`：只写 `cleared_at` 并删除数据。已开启的用户继续记录；未开启的保持未开启，并补写墓碑。要停止记录请用 `/羽忆 关闭`。
+- 清空不删 `users` 行，也不改变 `enabled` / `auto_history` / `store_topic`：只写 `cleared_at` 并删除数据，同时刷新授权写入 `context_valid_after`。已开启的用户继续记录；未开启的保持未开启，并补写墓碑。要停止记录请用 `/羽忆 关闭`。
 - 停用写 `disabled_at`；重新启用不清除，停用前产生的事件不会在重开后复活。
 - 启动与每小时维护会记录只读统计（用户 / 记忆 / 占卜 / 事件 / auth / context 数量），不设上限、不改变行为。
 - `suppressed_topics`：v1 表已建，命令留待 v2。

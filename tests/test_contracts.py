@@ -37,6 +37,22 @@ def test_auth_golden_roundtrip() -> None:
     assert auth.to_dict() == payload
     assert auth.is_valid(NOW)
     assert not auth.is_valid(datetime(2027, 5, 20, 12, 0, 0, tzinfo=timezone.utc))
+    assert auth.context_valid_after == ""
+
+
+def test_auth_context_cutoff_is_optional() -> None:
+    payload = load("auth.json") | {"context_valid_after": "2026-11-21T12:00:00Z"}
+    auth = Auth.parse(payload)
+    assert auth.context_valid_after == "2026-11-21T12:00:00Z"
+    assert auth.to_dict()["context_valid_after"] == "2026-11-21T12:00:00Z"
+    assert "context_valid_after" not in Auth.parse(load("auth.json")).to_dict()
+
+
+def test_auth_context_cutoff_must_be_timestamp() -> None:
+    with pytest.raises(ContractError):
+        Auth.parse(load("auth.json") | {"context_valid_after": "not-a-time"})
+    with pytest.raises(ContractError):
+        Auth.parse(load("auth.json") | {"context_valid_after": 123})
 
 
 def test_event_golden_roundtrip() -> None:
