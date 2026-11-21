@@ -1,6 +1,8 @@
 """命令层：把 `/羽忆 …` 的文本解析成服务调用，并生成回复文案（纯 Python）。"""
 from __future__ import annotations
 
+import random
+
 from ..core.categories import category_label
 from ..core.timeutil import parse_ts
 from .service import MemoryService
@@ -23,6 +25,79 @@ HELP_TEXT = (
 
 GLOBAL_OFF_TEXT = "羽忆未启用：请管理员在 AstrBot 插件配置里打开「羽忆 → 启用」。"
 PRIVATE_ONLY_TEXT = "羽忆的记忆查看与保存只能在私聊里进行；群聊可用 /羽忆 关闭 与 /羽忆 状态。"
+
+FLAVOR_POOLS = {
+    "remember": (
+        "记下了，第 #{id} 条。你说的，我都记着呢。",
+        "好，#{id}。本羽记性很好。",
+    ),
+    "modify": (
+        "改好了，#{id} 现在是这个样子。",
+        "嗯，改过来了。",
+    ),
+    "forget": (
+        "忘掉了 #{id}。往事如烟。",
+        "好，忘了。",
+    ),
+    "enable": (
+        "好，本羽开始替你记着了。",
+        "本子打开了，之后的事我都会记着。",
+    ),
+    "enable_auto": (
+        "好，之后你私聊里的占卜，我会留意的。",
+        "自动历史开了，本羽开始记着了。",
+    ),
+    "enable_topic": (
+        "主题也记上了。",
+        "好，本羽知道该记哪些了。",
+    ),
+    "disable": (
+        "好，本羽先合上本子。已存的记忆还在。",
+        "先停在这儿，本羽不看了。",
+    ),
+    "disable_auto": (
+        "好，自动历史先停了。",
+        "本羽不记新的了，旧的还在。",
+    ),
+    "disable_topic": (
+        "主题先不记了。",
+        "好，只留已经记下的。",
+    ),
+    "clear": (
+        "本羽都删干净了。",
+        "清干净了，还有需要本羽的地方吗？",
+    ),
+    "export": (
+        "拿去吧，这是本羽替你记下的全部。",
+        "本羽都收拾好放在这儿了，别弄丢。",
+    ),
+    "generic": (
+        "本羽不替你做决定，只会陪你记着。",
+        "想不起来的时候，来问本羽。",
+        "说过的，都算数。",
+    ),
+}
+
+_last_flavor: dict[str, str] = {}
+
+
+def _pick_flavor(action: str) -> str:
+    pool = FLAVOR_POOLS[action]
+    last = _last_flavor.get(action)
+    candidates = [line for line in pool if line != last] or list(pool)
+    choice = random.choice(candidates)
+    _last_flavor[action] = choice
+    return choice
+
+
+def _with_flavor(service: MemoryService, action: str, text: str,
+                 *, memory_id: int | None = None) -> str:
+    if not getattr(service, "flavor_enabled", True):
+        return text
+    flavor = _pick_flavor(action)
+    if memory_id is not None:
+        flavor = flavor.format(id=memory_id)
+    return f"{text}\n{flavor}" if text else flavor
 
 
 def _short_ts(value: str | None) -> str:
@@ -68,7 +143,7 @@ def _list_text(service: MemoryService, user_key: str) -> str:
     elif not user["store_topic"]:
         lines.append("主题记录：关闭（发送 /羽忆 开启 主题）")
     lines.append("删除：/羽忆 忘记 <id>；修改：/羽忆 修改 <id> <新内容>")
-    return "\n".join(lines)
+    return _with_flavor(service, "generic", "\n".join(lines))
 
 
 def _status_text(service: MemoryService, user_key: str, is_private: bool) -> str:
@@ -88,6 +163,10 @@ def _status_text(service: MemoryService, user_key: str, is_private: bool) -> str
         lines.append("群聊内不展示个人记忆与主题。")
         return "\n".join(lines)
 
+    def _finish() -> str:
+        text = "\n".join(lines)
+        return _with_flavor(service, "generic", text) if info["global_enabled"] else text
+
     user = info["user"]
     context = info["context"]
     context_usable = context is not None and context.is_usable(service.clock())
@@ -96,7 +175,7 @@ def _status_text(service: MemoryService, user_key: str, is_private: bool) -> str
         lines.append(f"待处理事件：{info['pending_events']} 条")
         lines.append("最近消费：" + _last_reading_text(info.get("last_reading_at")))
         _append_suggestions(lines, info, user, context_usable)
-        return "\n".join(lines)
+        return _finish()
 
     lines.append("本用户：已开启")
     lines.append("自动历史：" + ("开" if user["auto_history"] else "关"))
@@ -122,7 +201,7 @@ def _status_text(service: MemoryService, user_key: str, is_private: bool) -> str
     lines.append("最近消费：" + _last_reading_text(info.get("last_reading_at")))
     lines.append(f"待处理事件：{info['pending_events']} 条")
     _append_suggestions(lines, info, user, context_usable)
-    return "\n".join(lines)
+    return _finish()
 
 
 def _append_suggestions(lines: list[str], info: dict, user: dict | None,
@@ -170,22 +249,26 @@ def handle_command(service: MemoryService, user_key: str,
                 return ("已关闭，但文件清理未完成（"
                         + "/".join(failures)
                         + "），已标记待重试，请稍后再试或查看日志。")
-            return ("已关闭羽忆：记忆上下文与待处理事件已清除，授权已标记为不可投递；"
-                    "已保存的记忆仍保留，发送 /羽忆 清空 可彻底删除。")
+            return _with_flavor(
+                service, "disable",
+                "已关闭羽忆：记忆上下文与待处理事件已清除，授权已标记为不可投递；"
+                "已保存的记忆仍保留，发送 /羽忆 清空 可彻底删除。")
         if arg == "自动":
             code = service.disable_auto(user_key)
             if code == "missing":
                 return "当前还没有羽忆记录；发送 /羽忆 开启 可开启。"
             if code == "auth_failed":
                 return "自动历史已关闭，但授权文件刷新失败；请重试或查看日志。"
-            return "自动历史已关闭；主题记录保持不变。"
+            return _with_flavor(service, "disable_auto",
+                                "自动历史已关闭；主题记录保持不变。")
         if arg == "主题":
             code = service.disable_topic(user_key)
             if code == "missing":
                 return "当前还没有羽忆记录；发送 /羽忆 开启 可开启。"
             if code == "auth_failed":
                 return "主题记录已关闭，但授权文件刷新失败；请重试或查看日志。"
-            return "主题记录已关闭；自动历史保持不变。"
+            return _with_flavor(service, "disable_topic",
+                                "主题记录已关闭；自动历史保持不变。")
         return "用法：/羽忆 关闭 | 关闭 自动 | 关闭 主题。"
 
     def _clear() -> str:
@@ -199,7 +282,9 @@ def handle_command(service: MemoryService, user_key: str,
                 return ("已清空，但文件清理未完成（"
                         + "/".join(failures)
                         + "），已标记待重试，请稍后再试或查看日志。")
-            return "已清空你的羽忆数据。" + _clear_effect_text(service, user_key)
+            return _with_flavor(
+                service, "clear",
+                "已清空你的羽忆数据。" + _clear_effect_text(service, user_key))
         service.request_clear(user_key)
         return ("确认清空你的全部羽忆数据？60 秒内发送 /羽忆 清空 确认 执行。"
                 + _clear_effect_text(service, user_key))
@@ -212,10 +297,12 @@ def handle_command(service: MemoryService, user_key: str,
         if exported is None:
             return "还没有羽忆记录可以导出；先发送 /羽忆 开启 并保存一些内容。"
         path, payload = exported
-        return (f"已导出你的羽忆数据：{len(payload['memories'])} 条主动保存，"
-                f"{len(payload['recent_topics'])} 个近期主题。\n"
-                f"文件：{path}\n"
-                "发送 /羽忆 清空 会一并删除导出副本；文件不含账号标识与原始占卜问题。")
+        return _with_flavor(
+            service, "export",
+            f"已导出你的羽忆数据：{len(payload['memories'])} 条主动保存，"
+            f"{len(payload['recent_topics'])} 个近期主题。\n"
+            f"文件：{path}\n"
+            "发送 /羽忆 清空 会一并删除导出副本；文件不含账号标识与原始占卜问题。")
 
     if not service.global_enabled:
         if sub == "状态":
@@ -243,7 +330,8 @@ def handle_command(service: MemoryService, user_key: str,
         if not memory_id:
             return "内容为空，没有保存。"
         suffix = "（内容过长，已截断到 160 字）" if truncated else ""
-        return f"已保存 #{memory_id}{suffix}。"
+        return _with_flavor(service, "remember", f"已保存 #{memory_id}{suffix}。",
+                            memory_id=memory_id)
 
     if sub == "忘记":
         digits = arg.lstrip("#")
@@ -252,7 +340,8 @@ def handle_command(service: MemoryService, user_key: str,
                     "写 12 或 #12 都可以）。")
         memory_id = int(digits)
         if service.forget(user_key, memory_id):
-            return f"已删除 #{memory_id}。"
+            return _with_flavor(service, "forget", f"已删除 #{memory_id}。",
+                                memory_id=memory_id)
         return f"没有找到 #{memory_id}。"
 
     if sub == "修改":
@@ -270,7 +359,8 @@ def handle_command(service: MemoryService, user_key: str,
         if code == "empty":
             return "新内容为空，旧内容未改变。"
         suffix = "（内容过长，已截断到 160 字）" if truncated else ""
-        return f"已更新 #{memory_id}{suffix}。"
+        return _with_flavor(service, "modify", f"已更新 #{memory_id}{suffix}。",
+                            memory_id=memory_id)
 
     if sub in ("清空", "确认"):
         return _clear()
@@ -280,15 +370,19 @@ def handle_command(service: MemoryService, user_key: str,
             result = service.enable(user_key)
             if not result.get("auth_ok", True):
                 return "羽忆已开启，但授权文件写入失败；请重试或查看日志。"
-            return ("羽忆已开启：自动历史与主题记录一并打开。"
-                    "需要单独关闭时用 /羽忆 关闭 自动 或 /羽忆 关闭 主题。")
+            return _with_flavor(
+                service, "enable",
+                "羽忆已开启：自动历史与主题记录一并打开。"
+                "需要单独关闭时用 /羽忆 关闭 自动 或 /羽忆 关闭 主题。")
         if arg == "自动":
             code = service.enable_auto(user_key)
             if code == "not_enabled":
                 return "请先发送 /羽忆 开启。"
             if code == "auth_failed":
                 return "自动历史已开启，但授权文件写入失败；请重试或查看日志。"
-            return "自动历史已开启：之后私聊的普通占卜会记入近期主题（不保存原始问题）。"
+            return _with_flavor(
+                service, "enable_auto",
+                "自动历史已开启：之后私聊的普通占卜会记入近期主题（不保存原始问题）。")
         if arg == "主题":
             code = service.enable_topic(user_key)
             if code == "not_enabled":
@@ -297,7 +391,8 @@ def handle_command(service: MemoryService, user_key: str,
                 return "请先发送 /羽忆 开启 自动。"
             if code == "auth_failed":
                 return "主题记录已开启，但授权文件写入失败；请重试或查看日志。"
-            return "主题记录已开启：事件里会带上固定主题枚举。"
+            return _with_flavor(service, "enable_topic",
+                                "主题记录已开启：事件里会带上固定主题枚举。")
         return "用法：/羽忆 开启 | 开启 自动 | 开启 主题。"
 
     if sub == "关闭":

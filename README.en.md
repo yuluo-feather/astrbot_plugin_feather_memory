@@ -121,6 +121,7 @@ Feather Memory's settings live in the AstrBot plugin settings:
 | `memory.enabled` | bool | `false` | Master switch. When enabled, Feather Memory refreshes its lease and consumes the private-reading events Star Feather writes; when disabled it writes no lease, consumes nothing and injects nothing, while user data stays inert. Reload the plugin after changing it. |
 | `memory.auto_enroll` | bool | `true` | Auto enrollment. When on, a new user's first eligible private reading gets a one-time notice, and recording starts from the next one; when off, users must run `/羽忆 开启` themselves. Reload the plugin after changing it. |
 | `context.min_topic_count` | int | `1` | Minimum occurrences for a recent topic to enter the context. `1` keeps every recent topic; `2` keeps only topics seen more than once. It only affects the context and never deletes stored stats. |
+| `reply.flavor` | bool | `true` | Append a short in-character line to successful replies and to view / status output; errors, usage hints and group restrictions stay neutral. Reload the plugin after changing it. |
 
 To make the whole chain work, two switches on the Star Feather side must also be on (in Star Feather's plugin settings):
 

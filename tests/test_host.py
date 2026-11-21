@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from data.plugins.astrbot_plugin_feather_memory.adapters.host import (
     auto_enroll,
     command_argument,
+    flavor_enabled,
     is_private_chat,
     memory_enabled,
     min_topic_count,
@@ -123,3 +124,11 @@ def test_auto_enroll_config():
     assert auto_enroll({"memory": {}}) is True
     assert auto_enroll({}) is True
     assert auto_enroll(None) is True
+
+
+def test_flavor_config():
+    assert flavor_enabled({"reply": {"flavor": False}}) is False
+    assert flavor_enabled({"reply": {"flavor": True}}) is True
+    assert flavor_enabled({"reply": {}}) is True
+    assert flavor_enabled({}) is True
+    assert flavor_enabled(None) is True

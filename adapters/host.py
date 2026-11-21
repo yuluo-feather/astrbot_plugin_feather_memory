@@ -34,6 +34,7 @@ __all__ = [
     "auto_enroll",
     "build_service",
     "command_argument",
+    "flavor_enabled",
     "is_private_chat",
     "memory_enabled",
     "min_topic_count",
@@ -89,6 +90,17 @@ def auto_enroll(config: AstrBotConfig | None) -> bool:
     if not isinstance(section, dict):
         return True
     return bool(section.get("auto_enroll", True))
+
+
+def flavor_enabled(config: AstrBotConfig | None) -> bool:
+    """回复末尾的「本羽」尾巴；缺省为 True。"""
+    try:
+        section = (config or {}).get("reply") or {}
+    except AttributeError:
+        return True
+    if not isinstance(section, dict):
+        return True
+    return bool(section.get("flavor", True))
 
 
 def platform_id_from_event(event: AstrMessageEvent) -> str:
@@ -155,4 +167,5 @@ def build_service(config: AstrBotConfig | None) -> MemoryService:
         log=_HostLog(),
         min_topic_count=min_topic_count(config),
         auto_enroll=auto_enroll(config),
+        flavor_enabled=flavor_enabled(config),
     )

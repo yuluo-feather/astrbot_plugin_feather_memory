@@ -90,13 +90,15 @@ class MemoryService:
                  log: logging.Logger | None = None,
                  instance_id: str | None = None,
                  min_topic_count: int = 1,
-                 auto_enroll: bool = True):
+                 auto_enroll: bool = True,
+                 flavor_enabled: bool = True):
         self.store = store
         self.feed = feed
         self.global_enabled = global_enabled
         self.version = version
         self.min_topic_count = 2 if int(min_topic_count) >= 2 else 1
         self.auto_enroll = bool(auto_enroll)
+        self.flavor_enabled = bool(flavor_enabled)
         self.clock = clock
         self.log = log or logging.getLogger("feather_memory")
         self.instance_id = instance_id or new_ulid(clock())

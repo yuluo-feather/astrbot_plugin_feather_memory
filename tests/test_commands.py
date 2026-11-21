@@ -26,7 +26,7 @@ def test_full_command_flow(service):
     reply = handle_command(service, USER, True, "开启")
     assert "自动历史与主题记录一并打开" in reply
     assert "关闭 自动" in reply and "关闭 主题" in reply
-    assert handle_command(service, USER, True, "记住 偏好 温柔一点") == "已保存 #1。"
+    assert handle_command(service, USER, True, "记住 偏好 温柔一点").startswith("已保存 #1。")
     listing = handle_command(service, USER, True, "")
     assert "#1 [偏好] 温柔一点" in listing
 
@@ -37,18 +37,18 @@ def test_full_command_flow(service):
     assert "授权文件：有效" in status
     assert "记忆上下文：有效 · revision 1" in status
 
-    assert handle_command(service, USER, True, "关闭 主题") == "主题记录已关闭；自动历史保持不变。"
+    assert handle_command(service, USER, True, "关闭 主题").startswith("主题记录已关闭；自动历史保持不变。")
     status = handle_command(service, USER, True, "状态")
     assert "自动历史：开" in status and "主题记录：关" in status
 
-    assert handle_command(service, USER, True, "关闭 自动") == "自动历史已关闭；主题记录保持不变。"
+    assert handle_command(service, USER, True, "关闭 自动").startswith("自动历史已关闭；主题记录保持不变。")
     status = handle_command(service, USER, True, "状态")
     assert "自动历史：关" in status
 
     assert handle_command(service, USER, True, "开启 自动").startswith("自动历史已开启")
     assert handle_command(service, USER, True, "开启 主题").startswith("主题记录已开启")
 
-    assert handle_command(service, USER, True, "忘记 1") == "已删除 #1。"
+    assert handle_command(service, USER, True, "忘记 1").startswith("已删除 #1。")
     assert handle_command(service, USER, True, "忘记 1") == "没有找到 #1。"
     listing = handle_command(service, USER, True, "")
     assert "#1" not in listing
@@ -71,6 +71,7 @@ def test_view_aliases_equal_bare_command(service):
     service.startup()
     service.enable(USER)
     service.remember(USER, "喜欢温柔")
+    service.flavor_enabled = False
     base = handle_command(service, USER, True, "")
     for alias in ("查看", "查看记忆", "列表"):
         assert handle_command(service, USER, True, alias) == base
@@ -92,16 +93,16 @@ def test_modify_memory(service):
     service.startup()
     service.enable(USER)
     service.remember(USER, "偏好 温柔")
-    assert handle_command(service, USER, True, "修改 1 更温柔") == "已更新 #1。"
+    assert handle_command(service, USER, True, "修改 1 更温柔").startswith("已更新 #1。")
     listing = handle_command(service, USER, True, "")
     assert "#1 [偏好] 更温柔" in listing
-    assert handle_command(service, USER, True, "修改 #1 背景 学生") == "已更新 #1。"
+    assert handle_command(service, USER, True, "修改 #1 背景 学生").startswith("已更新 #1。")
     listing = handle_command(service, USER, True, "")
     assert "#1 [背景] 学生" in listing
     assert handle_command(service, USER, True, "修改 99 随便") == "没有找到 #99，旧内容未改变。"
     assert handle_command(service, USER, True, "修改 1").startswith("用法：/羽忆 修改")
-    assert handle_command(service, USER, True, "修改 1 " + "长" * 200).endswith(
-        "（内容过长，已截断到 160 字）。")
+    truncated_reply = handle_command(service, USER, True, "修改 1 " + "长" * 200)
+    assert truncated_reply.splitlines()[0].endswith("（内容过长，已截断到 160 字）。")
 
 
 def test_remember_category_prefix(service):
@@ -124,9 +125,9 @@ def test_clear_requires_confirmation(service, clock):
     handle_command(service, USER, True, "记住 喜欢温柔")
     first = handle_command(service, USER, True, "清空")
     assert first.startswith("确认清空")
-    assert handle_command(service, USER, True, "清空 确认") == (
-        "已清空你的羽忆数据。只删除已有数据，之后仍会继续记录；"
-        "要停止请发送 /羽忆 关闭。")
+    reply = handle_command(service, USER, True, "清空 确认")
+    assert reply.startswith("已清空你的羽忆数据。")
+    assert "只删除已有数据，之后仍会继续记录" in reply
 
 
 def test_clear_confirmation_expires(service, clock):
@@ -142,9 +143,9 @@ def test_standalone_confirm_clears(service):
     handle_command(service, USER, True, "开启")
     handle_command(service, USER, True, "记住 喜欢温柔")
     assert handle_command(service, USER, True, "清空").startswith("确认清空你的")
-    assert handle_command(service, USER, True, "确认") == (
-        "已清空你的羽忆数据。只删除已有数据，之后仍会继续记录；"
-        "要停止请发送 /羽忆 关闭。")
+    reply = handle_command(service, USER, True, "确认")
+    assert reply.startswith("已清空你的羽忆数据。")
+    assert "只删除已有数据，之后仍会继续记录" in reply
 
 
 def test_confirm_without_request(service):
@@ -168,7 +169,7 @@ def test_forget_accepts_hash_prefix(service):
     service.startup()
     handle_command(service, USER, True, "开启")
     handle_command(service, USER, True, "记住 喜欢温柔")
-    assert handle_command(service, USER, True, "忘记 #1") == "已删除 #1。"
+    assert handle_command(service, USER, True, "忘记 #1").startswith("已删除 #1。")
 
 
 def test_disable_failure_message(service, feed, monkeypatch, enabled_user):
