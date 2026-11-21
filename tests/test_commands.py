@@ -35,7 +35,7 @@ def test_full_command_flow(service):
     status = handle_command(service, USER, True, "状态")
     assert "自动历史：开" in status and "主题记录：开" in status
     assert "授权文件：有效" in status
-    assert "记忆上下文：revision 1" in status
+    assert "记忆上下文：有效 · revision 1" in status
 
     assert handle_command(service, USER, True, "关闭 主题") == "主题记录已关闭；自动历史保持不变。"
     status = handle_command(service, USER, True, "状态")
@@ -57,7 +57,7 @@ def test_full_command_flow(service):
 def test_help_commands_are_executable(service):
     service.startup()
     commands = [
-        "查看记忆", "查看", "列表", "",
+        "查看记忆", "查看", "列表", "导出", "",
         "记住 偏好 温柔一点", "修改 1 偏好 更温柔", "忘记 1",
         "清空",
         "开启", "开启 自动", "开启 主题",

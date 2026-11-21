@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 from .contracts import CONTEXT_ITEMS_MAX, CONTEXT_TEXT_MAX_CHARS
 
-EXPLICIT_LIMIT = 3
+EXPLICIT_LIMIT = 5
 TOPIC_PREFIX = "最近关注"
 
 
@@ -14,6 +14,7 @@ class ExplicitEntry:
     memory_id: int
     category: str
     content: str
+    updated_at: str = ""
 
 
 @dataclass(frozen=True, slots=True)

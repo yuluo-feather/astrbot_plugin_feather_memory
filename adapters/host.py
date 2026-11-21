@@ -35,6 +35,7 @@ __all__ = [
     "command_argument",
     "is_private_chat",
     "memory_enabled",
+    "min_topic_count",
     "platform_id_from_event",
     "sender_id_from_event",
 ]
@@ -66,6 +67,16 @@ def memory_enabled(config: AstrBotConfig | None) -> bool:
     except AttributeError:
         return False
     return bool(section.get("enabled", False)) if isinstance(section, dict) else False
+
+
+def min_topic_count(config: AstrBotConfig | None) -> int:
+    """近期主题进入 context 的最低出现次数；只接受 1 / 2，其余按 1 处理。"""
+    try:
+        section = (config or {}).get("context") or {}
+        value = int(section.get("min_topic_count", 1))
+    except (AttributeError, TypeError, ValueError):
+        return 1
+    return 2 if value >= 2 else 1
 
 
 def platform_id_from_event(event: AstrMessageEvent) -> str:
@@ -130,4 +141,5 @@ def build_service(config: AstrBotConfig | None) -> MemoryService:
         version=VERSION,
         clock=now_utc,
         log=_HostLog(),
+        min_topic_count=min_topic_count(config),
     )

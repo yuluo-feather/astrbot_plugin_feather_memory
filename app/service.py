@@ -5,11 +5,15 @@
 """
 from __future__ import annotations
 
+import json
 import logging
+import os
+import secrets
 import threading
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime
+from pathlib import Path
 from typing import Callable
 
 from ..adapters.file_lock import LockTimeout
@@ -35,9 +39,10 @@ from ..core.contracts import (
     MemoryItem,
     ReadingEvent,
 )
+from ..core.export import build_export
 from ..core.identity import user_key_hash
 from ..core.ids import new_ulid
-from ..core.merge import ExplicitEntry, TopicStat, compose_context
+from ..core.merge import EXPLICIT_LIMIT, ExplicitEntry, TopicStat, compose_context
 from ..core.timeutil import add_days, add_seconds, format_ts, now_utc, parse_ts
 
 MAX_MEMORY_CHARS = 160
@@ -82,11 +87,13 @@ class MemoryService:
                  global_enabled: bool, version: str,
                  clock: Callable[[], datetime] = now_utc,
                  log: logging.Logger | None = None,
-                 instance_id: str | None = None):
+                 instance_id: str | None = None,
+                 min_topic_count: int = 1):
         self.store = store
         self.feed = feed
         self.global_enabled = global_enabled
         self.version = version
+        self.min_topic_count = 2 if int(min_topic_count) >= 2 else 1
         self.clock = clock
         self.log = log or logging.getLogger("feather_memory")
         self.instance_id = instance_id or new_ulid(clock())
@@ -334,10 +341,11 @@ class MemoryService:
                     return "superseded"
             return "disabled"
 
-        explicit = self.store.list_memories(user_key, now, limit=3)
+        explicit = self.store.list_memories(user_key, now, limit=EXPLICIT_LIMIT)
         stats = self.store.topic_stats(user_key, now)
         suppressed = self.store.suppressed_topics(user_key)
-        stats = [topic for topic in stats if topic.topic_key not in suppressed]
+        stats = [topic for topic in stats if topic.topic_key not in suppressed
+                 and topic.count >= self.min_topic_count]
         items, text = compose_context(explicit, stats)
 
         if not items:
@@ -686,6 +694,47 @@ class MemoryService:
         suppressed = self.store.suppressed_topics(user_key)
         return memories, [topic for topic in stats if topic.topic_key not in suppressed]
 
+    def export_data(self, user_key: str) -> tuple[Path, dict] | None:
+        """把本人数据写到 plugin_data/feather_memory/exports/；无记录返回 None。"""
+        now = self.clock()
+        user = self.store.get_user(user_key)
+        if user is None:
+            return None
+        memories = self.store.list_memories(user_key, now, limit=200)
+        suppressed = self.store.suppressed_topics(user_key)
+        topics = [topic for topic in self.store.topic_stats(user_key, now)
+                  if topic.topic_key not in suppressed]
+        payload = build_export(
+            exported_at=format_ts(now),
+            plugin_version=self.version,
+            enabled=bool(user["enabled"]),
+            auto_history=bool(user["auto_history"]),
+            store_topic=bool(user["store_topic"]),
+            memories=memories,
+            topics=topics,
+        )
+        directory = self.store.path.parent / "exports"
+        directory.mkdir(parents=True, exist_ok=True)
+        filename = f"{secrets.token_hex(6)}-{now.strftime('%Y%m%dT%H%M%SZ')}.json"
+        path = directory / filename
+        data = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
+        tmp = path.with_name(f"{path.name}.tmp-{os.getpid()}")
+        try:
+            with open(tmp, "wb") as handle:
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(tmp, path)
+        finally:
+            if tmp.exists():
+                try:
+                    tmp.unlink()
+                except OSError:
+                    pass
+        self.log.info("导出：user=%s 记忆=%d 主题=%d",
+                      self._tag(user_key), len(memories), len(topics))
+        return path, payload
+
     def status(self, user_key: str) -> dict:
         now = self.clock()
         digest = user_key_hash(user_key)
@@ -700,5 +749,6 @@ class MemoryService:
             "auth": auth,
             "auth_valid": auth is not None and auth.is_valid(now),
             "context": self.feed.read_context(digest),
+            "last_reading_at": self.store.last_reading_at(user_key),
             "pending_events": self.feed.count_events_for_user(user_key),
         }

@@ -270,13 +270,14 @@ class SqliteStore:
         stamp = format_ts(now)
         with self._connect() as conn:
             rows = conn.execute(
-                "SELECT id, category, content FROM memories"
+                "SELECT id, category, content, updated_at FROM memories"
                 " WHERE user_key = ? AND (expires_at IS NULL OR expires_at = '' OR expires_at > ?)"
                 " ORDER BY updated_at DESC, id DESC LIMIT ?",
                 (user_key, stamp, limit),
             ).fetchall()
         return [ExplicitEntry(memory_id=int(row["id"]), category=row["category"],
-                              content=row["content"]) for row in rows]
+                              content=row["content"], updated_at=row["updated_at"])
+                for row in rows]
 
     def get_memory(self, user_key: str, memory_id: int) -> dict | None:
         with self._connect() as conn:
@@ -439,6 +440,14 @@ class SqliteStore:
                 (format_ts(now), event.user_key),
             )
         return "inserted"
+
+    def last_reading_at(self, user_key: str) -> str | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT MAX(created_at) AS last_at FROM readings WHERE user_key = ?",
+                (user_key,),
+            ).fetchone()
+        return row["last_at"] or None
 
     def topic_stats(self, user_key: str, now: datetime,
                     max_events: int = READING_RETENTION_COUNT,

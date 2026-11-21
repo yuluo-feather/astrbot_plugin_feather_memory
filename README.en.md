@@ -40,11 +40,12 @@ Feather Memory does not touch the framework KV store and does not import Star Fe
 ## 🌸 Features
 
 - 📝 **Explicit memory**: `/羽忆 记住 偏好 温柔一点` saves a preference, background or goal in one line — up to 160 characters, with a notice when it gets truncated
+- 📤 **Export**: `/羽忆 导出` writes your saved memories, recent-topic stats and switch states to a JSON file; your data only, with no account identifiers or raw questions
 - 🎯 **Fixed topics**: private normal readings contribute only a fixed enum — work / study / relationship / family / finance / health / social / travel. A question that hits several topics, or none, yields an empty topic; no semantic guessing
 - 🚫 **No raw questions**: events carry the spread, cards and topic enum, plus an event id, platform / user identifiers, timestamp and core version for dedupe and indexing — **never the words you asked**. Group chats and the daily fortune do not feed it
 - 🔁 **Revocable**: `/羽忆 关闭` immediately deletes auth, context and pending events; saved memories remain until `/羽忆 清空`
 - 🧩 **Plug and play**: if Feather Memory is absent, the lease is stale or the shared directory is missing, Star Feather simply behaves as if there were no memory
-- 🗂️ **Two sources merged**: explicit entries and recent topics become one context block of at most 600 characters and 5 items, valid for 30 days
+- 🗂️ **Two sources merged**: at most 5 items, with explicit entries taking slots first and recent topics filling the rest; merged into one context block of at most 600 characters, valid for 30 days
 - 🔒 **Group isolation**: no personal memory is shown or saved in group chats; only `/羽忆 状态` and `/羽忆 关闭` (without arguments) are accepted there, and partial disables are private-chat only
 - 🧱 **Cross-platform file locks**: POSIX `fcntl` and Windows `msvcrt` each have their own implementation; context writes are serialized and a crashed process releases its lock via the OS
 
@@ -55,6 +56,7 @@ Feather Memory does not touch the framework KV store and does not import Star Fe
 | Feature | Command | Description |
 |---------|---------|-------------|
 | 📖 View | `/羽忆`, `/羽忆 查看`, `/羽忆 查看记忆`, `/羽忆 列表` | List saved entries and recent topics |
+| 📤 Export | `/羽忆 导出` | Write your memories, recent topics and switch states to `plugin_data/feather_memory/exports/` and reply with the file path |
 | ✍️ Remember | `/羽忆 记住 <text>` | Save a preference / background / goal (optional `偏好` / `背景` / `目标` prefix; enables the master switch) |
 | ✏️ Modify | `/羽忆 修改 <id> <new text>` | Modify one saved entry; keeps its id, optional prefix changes category, truncates at 160 chars |
 | 🗑️ Forget | `/羽忆 忘记 <id>` | Delete one saved entry (ids look like `#12` in the list) |
@@ -65,7 +67,7 @@ Feather Memory does not touch the framework KV store and does not import Star Fe
 | 🔕 Disable auto | `/羽忆 关闭 自动` | Turn off auto history only; topic recording and stored data stay |
 | 🔕 Disable topics | `/羽忆 关闭 主题` | Turn off topic recording only; auto history and stored data stay |
 | 🔒 Disable | `/羽忆 关闭` | Full stop: delete auth, memory context and pending events; saved memories remain |
-| 📊 Status | `/羽忆 状态` | Show the global switch, lease remaining, auth, context revision and pending events |
+| 📊 Status | `/羽忆 状态` | Show the global switch, lease remaining, auth, context validity and generation time, last consumption and pending events |
 
 ### Example
 
@@ -111,11 +113,12 @@ A few boundaries live in the contract and here:
 
 ## 🎛️ Configuration
 
-Feather Memory has a single switch, configured in the AstrBot plugin settings:
+Feather Memory's settings live in the AstrBot plugin settings:
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `memory.enabled` | bool | `false` | Master switch. When enabled, Feather Memory refreshes its lease and consumes the private-reading events Star Feather writes; when disabled it writes no lease, consumes nothing and injects nothing, while user data stays inert. Reload the plugin after changing it. |
+| `context.min_topic_count` | int | `1` | Minimum occurrences for a recent topic to enter the context. `1` keeps every recent topic; `2` keeps only topics seen more than once. It only affects the context and never deletes stored stats. |
 
 To make the whole chain work, two switches on the Star Feather side must also be on (in Star Feather's plugin settings):
 
@@ -201,7 +204,8 @@ python -m pytest
 
 - First release: shared file contract v1 for service lease, user auth, event publishing/consumption and context rebuild
 - Memory sources: explicit entries (preferences / background / goals) and the fixed topic enum of private normal readings, merged into a context of at most 600 characters
-- Nine commands: view / remember / forget / clear / enable / enable auto / enable topic / disable / status
+- Commands: view / export / remember / modify / forget / clear / enable / enable auto / enable topic / disable / status
+- Context: up to 5 explicit entries take slots first, recent topics fill the rest; `context.min_topic_count` can require a topic to repeat before entering the context
 - Isolation: group chats and the daily fortune neither feed nor read memory; original questions are never stored
 - Reliability: SQLite WAL, event dedupe, serialized revisions, dirty rebuilds, TTL cleanup, cross-platform file locks
 

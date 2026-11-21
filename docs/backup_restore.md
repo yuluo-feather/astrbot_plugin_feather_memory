@@ -6,7 +6,9 @@
 
 ```text
 data/plugin_data/feather_memory/
-└── feather_memory.sqlite3        # 记忆正文、用户开关、占卜主题、revision
+├── feather_memory.sqlite3        # 记忆正文、用户开关、占卜主题、revision
+└── exports/                      # /羽忆 导出 生成的用户副本（可随时删除）
+    └── <random-id>-<时间戳>.json
 data/plugin_data/_shared/feather_memory/v1/
 ├── lease.json                    # 服务租约（可再生成）
 ├── auth/<sha256>.json            # 用户授权（可再生成）
@@ -17,6 +19,7 @@ data/plugin_data/_shared/feather_memory/v1/
 - **必须备份**：`plugin_data/feather_memory/`（SQLite 及其 `-wal` / `-shm`）。
 - **建议一起备份**：`_shared/feather_memory/v1/`，保持 DB 与 auth/context 来自同一快照。
 - `lease.json` 不必备份；恢复旧租约反而会让核心误以为羽忆仍在运行。
+- `exports/` 是用户主动导出的副本，含记忆正文，可随时删除；它不参与恢复。
 
 ## 2. 备份
 

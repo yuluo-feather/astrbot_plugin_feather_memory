@@ -1,17 +1,14 @@
 """命令层：把 `/羽忆 …` 的文本解析成服务调用，并生成回复文案（纯 Python）。"""
 from __future__ import annotations
 
+from ..core.categories import category_label
+from ..core.timeutil import parse_ts
 from .service import MemoryService
-
-CATEGORY_LABELS = {
-    "preference": "偏好",
-    "background": "背景",
-    "goal": "目标",
-}
 
 HELP_TEXT = (
     "羽忆命令：\n"
     "/羽忆 查看记忆（也可 /羽忆 查看、/羽忆 列表 或直接 /羽忆）\n"
+    "/羽忆 导出（把本人数据写入 plugin_data，仅私聊）\n"
     "/羽忆 记住 <内容>（可用「偏好 …」「背景 …」「目标 …」）\n"
     "/羽忆 修改 <id> <新内容>\n"
     "/羽忆 忘记 <id>\n"
@@ -28,8 +25,17 @@ GLOBAL_OFF_TEXT = "羽忆未启用：请管理员在 AstrBot 插件配置里打�
 PRIVATE_ONLY_TEXT = "羽忆的记忆查看与保存只能在私聊里进行；群聊可用 /羽忆 关闭 与 /羽忆 状态。"
 
 
-def _label(category: str) -> str:
-    return CATEGORY_LABELS.get(category, category)
+def _short_ts(value: str | None) -> str:
+    if not value:
+        return "未知"
+    try:
+        return parse_ts(value).strftime("%Y-%m-%d %H:%M")
+    except (TypeError, ValueError):
+        return value
+
+
+def _last_reading_text(value: str | None) -> str:
+    return _short_ts(value) if value else "还没有"
 
 
 def _list_text(service: MemoryService, user_key: str) -> str:
@@ -41,7 +47,7 @@ def _list_text(service: MemoryService, user_key: str) -> str:
     memories, topics = service.list_display(user_key)
     lines = ["羽忆 · 已开启", "主动保存"]
     if memories:
-        lines.extend(f"  #{entry.memory_id} [{_label(entry.category)}] {entry.content}"
+        lines.extend(f"  #{entry.memory_id} [{category_label(entry.category)}] {entry.content}"
                      for entry in memories)
     else:
         lines.append("  （还没有）")
@@ -64,7 +70,6 @@ def _status_text(service: MemoryService, user_key: str, is_private: bool) -> str
     lines.append("全局：" + ("已启用" if info["global_enabled"] else "未启用"))
     lease = info["lease"]
     if info["lease_valid"] and lease is not None and lease.expires_at:
-        from ..core.timeutil import parse_ts
         remaining = max(0, int((parse_ts(lease.expires_at) - service.clock()).total_seconds()))
         lines.append(
             f"租约：有效（剩余 {remaining // 60} 分 {remaining % 60} 秒，"
@@ -82,6 +87,7 @@ def _status_text(service: MemoryService, user_key: str, is_private: bool) -> str
     if user is None or not user["enabled"]:
         lines.append("本用户：未开启")
         lines.append(f"待处理事件：{info['pending_events']} 条")
+        lines.append("最近消费：" + _last_reading_text(info.get("last_reading_at")))
         _append_suggestions(lines, info, user, context_usable)
         return "\n".join(lines)
 
@@ -95,10 +101,18 @@ def _status_text(service: MemoryService, user_key: str, is_private: bool) -> str
     else:
         lines.append("授权文件：无")
     dirty = "是" if user["context_dirty"] else "否"
-    if context_usable:
-        lines.append(f"记忆上下文：revision {context.revision}（dirty={dirty}）")
-    else:
+    if context is None:
         lines.append(f"记忆上下文：无（dirty={dirty}）")
+    elif context_usable:
+        lines.append(
+            f"记忆上下文：有效 · revision {context.revision} · "
+            f"{len(context.items)} 条 / {len(context.text)} 字 · "
+            f"生成于 {_short_ts(context.generated_at)}（dirty={dirty}）")
+    else:
+        lines.append(
+            f"记忆上下文：已过期 · revision {context.revision} · "
+            f"生成于 {_short_ts(context.generated_at)}（dirty={dirty}）")
+    lines.append("最近消费：" + _last_reading_text(info.get("last_reading_at")))
     lines.append(f"待处理事件：{info['pending_events']} 条")
     _append_suggestions(lines, info, user, context_usable)
     return "\n".join(lines)
@@ -182,6 +196,19 @@ def handle_command(service: MemoryService, user_key: str,
         service.request_clear(user_key)
         return ("确认清空你的全部羽忆数据？60 秒内发送 /羽忆 清空 确认 执行。")
 
+    def _export() -> str:
+        try:
+            exported = service.export_data(user_key)
+        except OSError:
+            return "导出失败：无法写入导出文件，请查看日志后重试。"
+        if exported is None:
+            return "还没有羽忆记录可以导出；先发送 /羽忆 开启 并保存一些内容。"
+        path, payload = exported
+        return (f"已导出你的羽忆数据：{len(payload['memories'])} 条主动保存，"
+                f"{len(payload['recent_topics'])} 个近期主题。\n"
+                f"文件：{path}\n"
+                "文件不含账号标识与原始占卜问题。")
+
     if not service.global_enabled:
         if sub == "状态":
             return _status_text(service, user_key, is_private)
@@ -189,10 +216,15 @@ def handle_command(service: MemoryService, user_key: str,
             return _close()
         if sub in ("清空", "确认"):
             return _clear()
+        if sub == "导出":
+            return _export()
         return GLOBAL_OFF_TEXT
 
     if sub == "" or sub in ("查看", "查看记忆", "列表"):
         return _list_text(service, user_key)
+
+    if sub == "导出":
+        return _export()
 
     if sub == "记住":
         if not arg:

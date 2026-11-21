@@ -6,6 +6,8 @@ from types import SimpleNamespace
 from data.plugins.astrbot_plugin_feather_memory.adapters.host import (
     command_argument,
     is_private_chat,
+    memory_enabled,
+    min_topic_count,
     platform_id_from_event,
     sender_id_from_event,
 )
@@ -96,3 +98,19 @@ def test_command_argument_empty_cases():
     assert command_argument(_MessageEvent("/羽忆   ")) == ""
     assert command_argument(_MessageEvent("别的命令")) == ""
     assert command_argument(_MessageEvent(raises=True)) == ""
+
+
+def test_min_topic_count_config():
+    assert min_topic_count({"context": {"min_topic_count": 2}}) == 2
+    assert min_topic_count({"context": {"min_topic_count": 9}}) == 2
+    assert min_topic_count({"context": {"min_topic_count": 0}}) == 1
+    assert min_topic_count({"context": {"min_topic_count": "x"}}) == 1
+    assert min_topic_count({}) == 1
+    assert min_topic_count(None) == 1
+
+
+def test_memory_enabled_config():
+    assert memory_enabled({"memory": {"enabled": True}}) is True
+    assert memory_enabled({"memory": {"enabled": False}}) is False
+    assert memory_enabled({}) is False
+    assert memory_enabled(None) is False
