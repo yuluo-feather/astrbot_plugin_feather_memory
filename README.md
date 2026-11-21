@@ -61,3 +61,7 @@ python -m pytest
 ```
 
 插件没有第三方运行时依赖，只使用 Python 标准库与 AstrBot 宿主 API。
+
+## 许可证
+
+AGPL-3.0，详见 [LICENSE](LICENSE)。

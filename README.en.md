@@ -61,3 +61,7 @@ python -m pytest
 ```
 
 There are no third-party runtime dependencies; only the Python standard library and the AstrBot host API are used.
+
+## License
+
+AGPL-3.0. See [LICENSE](LICENSE).

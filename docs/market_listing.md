@@ -12,6 +12,7 @@
 | 仓库 | `yuluo-feather/astrbot_plugin_feather_memory` |
 | 标签 | 记忆、塔罗、工具 |
 | 分类 | 工具 |
+| 许可证 | AGPL-3.0 |
 
 ## 短描述
 
