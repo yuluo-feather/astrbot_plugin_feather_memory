@@ -15,8 +15,10 @@ HELP_TEXT = (
     "/羽忆 记住 <内容>（可用「偏好 …」「背景 …」「目标 …」）\n"
     "/羽忆 忘记 <id>\n"
     "/羽忆 清空（需二次确认）\n"
-    "/羽忆 开启 | 开启 自动 | 开启 主题\n"
-    "/羽忆 关闭\n"
+    "/羽忆 开启（一次打开总开关、自动历史、主题记录）\n"
+    "/羽忆 开启 自动 | 开启 主题（单项细调）\n"
+    "/羽忆 关闭 自动 | 关闭 主题（单项关闭）\n"
+    "/羽忆 关闭（全关并清除授权、context、待处理事件）\n"
     "/羽忆 状态\n"
     "请不要保存密码、令牌或账号凭据。"
 )
@@ -143,7 +145,8 @@ def handle_command(service: MemoryService, user_key: str,
     if sub == "开启":
         if arg == "":
             service.enable(user_key)
-            return "羽忆已开启。自动历史默认关闭，需要时说 /羽忆 开启 自动。"
+            return ("羽忆已开启：自动历史与主题记录一并打开。"
+                    "需要单独关闭时用 /羽忆 关闭 自动 或 /羽忆 关闭 主题。")
         if arg == "自动":
             code = service.enable_auto(user_key)
             if code == "not_enabled":
@@ -159,9 +162,19 @@ def handle_command(service: MemoryService, user_key: str,
         return "用法：/羽忆 开启 | 开启 自动 | 开启 主题。"
 
     if sub == "关闭":
-        service.disable(user_key)
-        return ("已关闭羽忆：授权、记忆上下文与待处理事件已清除；"
-                "已保存的记忆仍保留，发送 /羽忆 清空 可彻底删除。")
+        if arg == "":
+            service.disable(user_key)
+            return ("已关闭羽忆：授权、记忆上下文与待处理事件已清除；"
+                    "已保存的记忆仍保留，发送 /羽忆 清空 可彻底删除。")
+        if arg == "自动":
+            if service.disable_auto(user_key) == "missing":
+                return "当前还没有羽忆记录；发送 /羽忆 开启 可开启。"
+            return "自动历史已关闭；主题记录保持不变。"
+        if arg == "主题":
+            if service.disable_topic(user_key) == "missing":
+                return "当前还没有羽忆记录；发送 /羽忆 开启 可开启。"
+            return "主题记录已关闭；自动历史保持不变。"
+        return "用法：/羽忆 关闭 | 关闭 自动 | 关闭 主题。"
 
     if sub == "状态":
         return _status_text(service, user_key, is_private)

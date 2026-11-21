@@ -22,11 +22,12 @@ def test_global_disabled_refuses_except_status(tmp_path, feed, store, clock):
 def test_full_command_flow(service):
     service.startup()
     assert "还没开启" in handle_command(service, USER, True, "")
-    assert "羽忆已开启" in handle_command(service, USER, True, "开启")
+    reply = handle_command(service, USER, True, "开启")
+    assert "自动历史与主题记录一并打开" in reply
+    assert "关闭 自动" in reply and "关闭 主题" in reply
     assert handle_command(service, USER, True, "记住 偏好 温柔一点") == "已保存 #1。"
     listing = handle_command(service, USER, True, "")
     assert "#1 [偏好] 温柔一点" in listing
-    assert "自动历史：关闭" in listing
 
     assert handle_command(service, USER, True, "开启 自动").startswith("自动历史已开启")
     assert handle_command(service, USER, True, "开启 主题").startswith("主题记录已开启")
@@ -34,6 +35,17 @@ def test_full_command_flow(service):
     assert "自动历史：开" in status and "主题记录：开" in status
     assert "授权文件：有效" in status
     assert "记忆上下文：revision 1" in status
+
+    assert handle_command(service, USER, True, "关闭 主题") == "主题记录已关闭；自动历史保持不变。"
+    status = handle_command(service, USER, True, "状态")
+    assert "自动历史：开" in status and "主题记录：关" in status
+
+    assert handle_command(service, USER, True, "关闭 自动") == "自动历史已关闭；主题记录保持不变。"
+    status = handle_command(service, USER, True, "状态")
+    assert "自动历史：关" in status
+
+    assert handle_command(service, USER, True, "开启 自动").startswith("自动历史已开启")
+    assert handle_command(service, USER, True, "开启 主题").startswith("主题记录已开启")
 
     assert handle_command(service, USER, True, "忘记 1") == "已删除 #1。"
     assert handle_command(service, USER, True, "忘记 1") == "没有找到 #1。"
@@ -84,7 +96,17 @@ def test_enable_auto_and_topic_require_prerequisites(service):
     service.startup()
     assert handle_command(service, USER, True, "开启 自动") == "请先发送 /羽忆 开启。"
     handle_command(service, USER, True, "开启")
+    service.disable_auto(USER)
     assert handle_command(service, USER, True, "开启 主题") == "请先发送 /羽忆 开启 自动。"
+    assert handle_command(service, USER, True, "开启 自动").startswith("自动历史已开启")
+    assert handle_command(service, USER, True, "开启 主题").startswith("主题记录已开启")
+
+
+def test_close_subcommands_on_unknown_user(service):
+    service.startup()
+    assert handle_command(service, USER, True, "关闭 自动") == "当前还没有羽忆记录；发送 /羽忆 开启 可开启。"
+    assert handle_command(service, USER, True, "关闭 主题") == "当前还没有羽忆记录；发送 /羽忆 开启 可开启。"
+    assert handle_command(service, USER, True, "关闭 随便") == "用法：/羽忆 关闭 | 关闭 自动 | 关闭 主题。"
 
 
 def test_unknown_subcommand_shows_help(service):

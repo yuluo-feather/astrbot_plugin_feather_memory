@@ -58,10 +58,12 @@ Feather Memory does not touch the framework KV store and does not import Star Fe
 | ✍️ Remember | `/羽忆 记住 <text>` | Save a preference / background / goal (optional `偏好` / `背景` / `目标` prefix; enables the master switch) |
 | 🗑️ Forget | `/羽忆 忘记 <id>` | Delete one saved entry (ids look like `#12` in the list) |
 | 🧹 Clear | `/羽忆 清空` | Clear all Feather Memory data after a second confirmation (reply `确认` within 60 seconds) |
-| 🔛 Enable | `/羽忆 开启` | Turn on the per-user master switch |
-| 🤖 Auto history | `/羽忆 开启 自动` | Allow private normal readings to feed recent topics |
-| 🏷️ Topic recording | `/羽忆 开启 主题` | Allow events to carry the fixed topic enum (requires auto history first) |
-| 🔒 Disable | `/羽忆 关闭` | Delete auth, memory context and pending events; saved memories remain |
+| 🔛 Enable | `/羽忆 开启` | Turn on the master switch, auto history and topic recording in one step (one auth write) |
+| 🤖 Auto history | `/羽忆 开启 自动` | Fine-grained: allow private normal readings to feed recent topics (idempotent) |
+| 🏷️ Topic recording | `/羽忆 开启 主题` | Fine-grained: allow events to carry the fixed topic enum (idempotent, requires auto history first) |
+| 🔕 Disable auto | `/羽忆 关闭 自动` | Turn off auto history only; topic recording and stored data stay |
+| 🔕 Disable topics | `/羽忆 关闭 主题` | Turn off topic recording only; auto history and stored data stay |
+| 🔒 Disable | `/羽忆 关闭` | Full stop: delete auth, memory context and pending events; saved memories remain |
 | 📊 Status | `/羽忆 状态` | Show the global switch, lease remaining, auth, context revision and pending events |
 
 ### Example
@@ -69,9 +71,11 @@ Feather Memory does not touch the framework KV store and does not import Star Fe
 ```
 /羽忆 记住 背景 最近在准备考研，压力有点大
 /羽忆 状态
-/羽忆 开启 自动
-/羽忆 开启 主题
+/羽忆 开启
+/羽忆 关闭 自动
 ```
+
+`/羽忆 开启` turns on the master switch, auto history and topic recording in one step; use `/羽忆 关闭 自动` or `/羽忆 关闭 主题` to turn off a single part while keeping the master switch on.
 
 Once auto history and topic recording are on, your private normal readings slowly build up "what you've been focused on lately". On the next reading, Star Feather treats that context as reference material, not as instructions.
 

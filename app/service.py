@@ -390,13 +390,14 @@ class MemoryService:
         return self.store.get_user(user_key)
 
     def enable(self, user_key: str) -> dict:
+        """一键开启：总开关 + 自动历史 + 主题记录，只写一次授权。"""
         now = self.clock()
         user = self.store.ensure_user(user_key, now)
-        if not user["enabled"]:
-            self.store.set_user_flags(user_key, now, enabled=1)
+        self.store.set_user_flags(
+            user_key, now, enabled=1, auto_history=1, store_topic=1)
         self.refresh_auth(user_key, now)
         self.rebuild_context(user_key, now)
-        self.log.info("开关：enable(%s)", self._tag(user_key))
+        self.log.info("开关：enable-all(%s)", self._tag(user_key))
         return self.store.get_user(user_key) or user
 
     def enable_auto(self, user_key: str) -> str:
@@ -421,6 +422,30 @@ class MemoryService:
         self.refresh_auth(user_key, now)
         self.rebuild_context(user_key, now)
         self.log.info("开关：topic(%s)=1", self._tag(user_key))
+        return "ok"
+
+    def disable_auto(self, user_key: str) -> str:
+        """只关自动历史；主题记录与已存数据不动。"""
+        now = self.clock()
+        user = self.store.get_user(user_key)
+        if user is None:
+            return "missing"
+        self.store.set_user_flags(user_key, now, auto_history=0)
+        if user["enabled"]:
+            self.refresh_auth(user_key, now)
+        self.log.info("开关：auto(%s)=0", self._tag(user_key))
+        return "ok"
+
+    def disable_topic(self, user_key: str) -> str:
+        """只关主题记录；自动历史与已存数据不动。"""
+        now = self.clock()
+        user = self.store.get_user(user_key)
+        if user is None:
+            return "missing"
+        self.store.set_user_flags(user_key, now, store_topic=0)
+        if user["enabled"]:
+            self.refresh_auth(user_key, now)
+        self.log.info("开关：topic(%s)=0", self._tag(user_key))
         return "ok"
 
     def disable(self, user_key: str) -> int:

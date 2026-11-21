@@ -46,16 +46,24 @@ def test_shutdown_keeps_other_instance_lease(service, feed, clock):
     assert feed.read_lease().instance_id == other.instance_id
 
 
-def test_enable_creates_auth_but_keeps_auto_off(service, feed):
+def test_enable_opens_all_and_writes_auth_once(service, feed, monkeypatch):
     user = "aiocqhttp:1"
     service.startup()
+    calls = {"count": 0}
+    original = feed.write_auth
+
+    def counting(auth):
+        calls["count"] += 1
+        return original(auth)
+
+    monkeypatch.setattr(feed, "write_auth", counting)
     service.enable(user)
     row = service.user_state(user)
-    assert row["enabled"] == 1
-    assert row["auto_history"] == 0
+    assert (row["enabled"], row["auto_history"], row["store_topic"]) == (1, 1, 1)
     auth = feed.read_auth(user_key_hash(user))
-    assert auth is not None and auth.auto_history is False
-    assert feed.read_context(user_key_hash(user)) is None
+    assert auth is not None
+    assert auth.auto_history is True and auth.store_topic is True
+    assert calls["count"] == 1
 
 
 def test_enable_auto_requires_total_switch(service):
@@ -65,13 +73,45 @@ def test_enable_auto_requires_total_switch(service):
     assert service.enable_auto("aiocqhttp:1") == "ok"
 
 
-def test_enable_topic_requires_auto(service):
+def test_enable_topic_requires_auto(service, clock):
+    user = "aiocqhttp:1"
+    service.startup()
+    service.store.ensure_user(user, clock.now())
+    service.store.set_user_flags(user, clock.now(), enabled=1)
+    service.refresh_auth(user, clock.now())
+    assert service.enable_topic(user) == "auto_required"
+    assert service.enable_auto(user) == "ok"
+    assert service.enable_topic(user) == "ok"
+
+
+def test_disable_auto_only_changes_auto(service, feed):
     user = "aiocqhttp:1"
     service.startup()
     service.enable(user)
-    assert service.enable_topic(user) == "auto_required"
-    service.enable_auto(user)
-    assert service.enable_topic(user) == "ok"
+    assert service.disable_auto(user) == "ok"
+    row = service.user_state(user)
+    assert (row["enabled"], row["auto_history"], row["store_topic"]) == (1, 0, 1)
+    auth = feed.read_auth(user_key_hash(user))
+    assert auth is not None
+    assert auth.auto_history is False and auth.store_topic is True
+
+
+def test_disable_topic_only_changes_topic(service, feed):
+    user = "aiocqhttp:1"
+    service.startup()
+    service.enable(user)
+    assert service.disable_topic(user) == "ok"
+    row = service.user_state(user)
+    assert (row["enabled"], row["auto_history"], row["store_topic"]) == (1, 1, 0)
+    auth = feed.read_auth(user_key_hash(user))
+    assert auth is not None
+    assert auth.auto_history is True and auth.store_topic is False
+
+
+def test_disable_subcommands_missing_user(service):
+    service.startup()
+    assert service.disable_auto("aiocqhttp:none") == "missing"
+    assert service.disable_topic("aiocqhttp:none") == "missing"
 
 
 def test_consume_success_writes_context_and_deletes_file(
@@ -132,7 +172,7 @@ def test_store_topic_off_clears_topic(service, feed, clock, make_event):
     user = "aiocqhttp:777"
     service.startup()
     service.enable(user)
-    service.enable_auto(user)
+    assert service.disable_topic(user) == "ok"
     feed.write_event(make_event("01J1", user, topic_key="工作"))
     assert service.consume_pending(clock.now()) == 1
     assert service.store.topic_stats(user, clock.now()) == []
@@ -317,6 +357,7 @@ def test_auth_without_auto_history_drops_event(service, feed, clock, make_event)
     user = "aiocqhttp:556"
     service.startup()
     service.enable(user)
+    assert service.disable_auto(user) == "ok"
     feed.write_event(make_event("01J1", user))
     assert service.consume_pending(clock.now()) == 0
     assert not feed.event_path("01J1").exists()
