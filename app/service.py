@@ -598,10 +598,29 @@ class MemoryService:
                              failures, self._tag(user_key))
         return removed, failures
 
+    def _remove_export_row(self, user_key: str, name: str) -> None:
+        try:
+            self.store.remove_export(user_key, name)
+        except Exception as exc:
+            self.log.warning("删除导出索引失败：%s", exc)
+
+    def _delete_export_file(self, directory: Path, name: str) -> bool:
+        """删文件成功或本就不存在返回 True；IO 失败返回 False 并保留索引行。"""
+        if Path(name).name != name:
+            return True
+        try:
+            (directory / name).unlink()
+        except FileNotFoundError:
+            return True
+        except OSError as exc:
+            self.log.warning("删除导出文件失败：%s", exc)
+            return False
+        return True
+
     def _cleanup_exports(self, user_key: str, failures: list[str]) -> None:
         """清空时一并删除该用户导出到 exports/ 的副本。"""
         try:
-            names = self.store.take_exports(user_key)
+            names = self.store.list_exports(user_key)
         except Exception as exc:
             self.log.warning("导出索引读取失败：%s", exc)
             failures.append("exports")
@@ -609,15 +628,10 @@ class MemoryService:
         directory = self.store.path.parent / "exports"
         failed = False
         for name in names:
-            if Path(name).name != name:
-                continue
-            try:
-                (directory / name).unlink()
-            except FileNotFoundError:
-                continue
-            except OSError as exc:
+            if self._delete_export_file(directory, name):
+                self._remove_export_row(user_key, name)
+            else:
                 failed = True
-                self.log.warning("删除导出文件失败：%s", exc)
         if failed:
             failures.append("exports")
 
@@ -771,21 +785,15 @@ class MemoryService:
         return path, payload
 
     def _trim_exports(self, user_key: str, directory: Path) -> None:
-        """每个用户只保留最近 EXPORT_KEEP_COUNT 份导出。"""
+        """每个用户只保留最近 EXPORT_KEEP_COUNT 份导出；失败的行留待下次重试。"""
         try:
-            stale = self.store.trim_exports(user_key, EXPORT_KEEP_COUNT)
+            stale = self.store.stale_exports(user_key, EXPORT_KEEP_COUNT)
         except Exception as exc:
             self.log.warning("导出轮转失败：%s", exc)
             return
         for name in stale:
-            if Path(name).name != name:
-                continue
-            try:
-                (directory / name).unlink()
-            except FileNotFoundError:
-                continue
-            except OSError as exc:
-                self.log.warning("删除旧导出失败：%s", exc)
+            if self._delete_export_file(directory, name):
+                self._remove_export_row(user_key, name)
 
     def status(self, user_key: str) -> dict:
         now = self.clock()

@@ -522,29 +522,28 @@ class SqliteStore:
                 (user_key, filename, format_ts(now)),
             )
 
-    def take_exports(self, user_key: str) -> list[str]:
-        """取出并删除该用户的导出索引，供清空时删除对应文件。"""
-        with self._connect(immediate=True) as conn:
+    def list_exports(self, user_key: str) -> list[str]:
+        with self._connect() as conn:
             rows = conn.execute(
                 "SELECT filename FROM exports WHERE user_key = ?", (user_key,)
             ).fetchall()
-            conn.execute("DELETE FROM exports WHERE user_key = ?", (user_key,))
         return [row["filename"] for row in rows]
 
-    def trim_exports(self, user_key: str, keep: int) -> list[str]:
-        """只保留最近 keep 份导出，返回被淘汰的文件名（由调用方删文件）。"""
-        with self._connect(immediate=True) as conn:
+    def stale_exports(self, user_key: str, keep: int) -> list[str]:
+        """返回超出保留份数的旧导出文件名；索引行由调用方删文件成功后再删。"""
+        with self._connect() as conn:
             rows = conn.execute(
-                "SELECT id, filename FROM exports WHERE user_key = ? ORDER BY id DESC",
+                "SELECT filename FROM exports WHERE user_key = ? ORDER BY id DESC",
                 (user_key,),
             ).fetchall()
-            stale = rows[keep:]
-            if stale:
-                conn.executemany(
-                    "DELETE FROM exports WHERE id = ?",
-                    [(row["id"],) for row in stale],
-                )
-        return [row["filename"] for row in stale]
+        return [row["filename"] for row in rows[keep:]]
+
+    def remove_export(self, user_key: str, filename: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "DELETE FROM exports WHERE user_key = ? AND filename = ?",
+                (user_key, filename),
+            )
 
     # ---- clear ---------------------------------------------------------
 

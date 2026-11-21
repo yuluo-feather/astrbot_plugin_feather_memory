@@ -224,6 +224,54 @@ def test_export_keeps_latest_five(service):
         path.name for path in paths[1:])
 
 
+def _fail_export_unlink(monkeypatch) -> None:
+    real_unlink = Path.unlink
+
+    def fake_unlink(path, *args, **kwargs):
+        if path.parent.name == "exports":
+            raise OSError("denied")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", fake_unlink)
+
+
+def test_clear_keeps_export_index_when_unlink_fails(service, monkeypatch):
+    service.startup()
+    service.enable(USER)
+    service.remember(USER, "偏好 温柔")
+    path = _export_path(handle_command(service, USER, True, "导出"))
+
+    _fail_export_unlink(monkeypatch)
+    _, failures = service.clear(USER)
+    assert "exports" in failures
+    assert path.exists()
+    assert _export_rows(service, USER) == [path.name]
+
+    monkeypatch.undo()
+    _, failures = service.clear(USER)
+    assert "exports" not in failures
+    assert not path.exists()
+    assert _export_rows(service, USER) == []
+
+
+def test_trim_keeps_export_index_when_unlink_fails(service, monkeypatch):
+    service.startup()
+    service.enable(USER)
+    paths = [_export_path(handle_command(service, USER, True, "导出"))
+             for _ in range(5)]
+
+    _fail_export_unlink(monkeypatch)
+    newest = _export_path(handle_command(service, USER, True, "导出"))
+    assert paths[0].exists()
+    assert len(_export_rows(service, USER)) == 6
+
+    monkeypatch.undo()
+    latest = _export_path(handle_command(service, USER, True, "导出"))
+    assert not paths[0].exists()
+    assert len(_export_rows(service, USER)) == 5
+    assert newest.exists() and latest.exists()
+
+
 def test_disable_keeps_exported_files(service):
     service.startup()
     service.enable(USER)
