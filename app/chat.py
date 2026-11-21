@@ -105,8 +105,13 @@ def handle_command(service: MemoryService, user_key: str,
     sub = head.strip()
     arg = rest.strip()
 
-    if not is_private and sub not in ("状态", "关闭"):
-        return PRIVATE_ONLY_TEXT
+    if not is_private:
+        if sub == "状态":
+            pass
+        elif sub == "关闭" and arg == "":
+            pass
+        else:
+            return PRIVATE_ONLY_TEXT
 
     def _close() -> str:
         if arg == "":
@@ -114,12 +119,18 @@ def handle_command(service: MemoryService, user_key: str,
             return ("已关闭羽忆：授权、记忆上下文与待处理事件已清除；"
                     "已保存的记忆仍保留，发送 /羽忆 清空 可彻底删除。")
         if arg == "自动":
-            if service.disable_auto(user_key) == "missing":
+            code = service.disable_auto(user_key)
+            if code == "missing":
                 return "当前还没有羽忆记录；发送 /羽忆 开启 可开启。"
+            if code == "auth_failed":
+                return "自动历史已关闭，但授权文件刷新失败；请重试或查看日志。"
             return "自动历史已关闭；主题记录保持不变。"
         if arg == "主题":
-            if service.disable_topic(user_key) == "missing":
+            code = service.disable_topic(user_key)
+            if code == "missing":
                 return "当前还没有羽忆记录；发送 /羽忆 开启 可开启。"
+            if code == "auth_failed":
+                return "主题记录已关闭，但授权文件刷新失败；请重试或查看日志。"
             return "主题记录已关闭；自动历史保持不变。"
         return "用法：/羽忆 关闭 | 关闭 自动 | 关闭 主题。"
 
@@ -131,8 +142,7 @@ def handle_command(service: MemoryService, user_key: str,
                 return "没有待确认或已过期的清空请求；发送 /羽忆 清空 重新发起。"
             return "确认已过期，请重新发送 /羽忆 清空。"
         service.request_clear(user_key)
-        return ("确认清空你的全部羽忆数据？60 秒内发送 /羽忆 清空 确认，"
-                "或直接回复 确认。")
+        return ("确认清空你的全部羽忆数据？60 秒内发送 /羽忆 清空 确认 执行。")
 
     if not service.global_enabled:
         if sub == "状态":
@@ -170,13 +180,17 @@ def handle_command(service: MemoryService, user_key: str,
 
     if sub == "开启":
         if arg == "":
-            service.enable(user_key)
+            result = service.enable(user_key)
+            if not result.get("auth_ok", True):
+                return "羽忆已开启，但授权文件写入失败；请重试或查看日志。"
             return ("羽忆已开启：自动历史与主题记录一并打开。"
                     "需要单独关闭时用 /羽忆 关闭 自动 或 /羽忆 关闭 主题。")
         if arg == "自动":
             code = service.enable_auto(user_key)
             if code == "not_enabled":
                 return "请先发送 /羽忆 开启。"
+            if code == "auth_failed":
+                return "自动历史已开启，但授权文件写入失败；请重试或查看日志。"
             return "自动历史已开启：之后私聊的普通占卜会记入近期主题（不保存原始问题）。"
         if arg == "主题":
             code = service.enable_topic(user_key)
@@ -184,6 +198,8 @@ def handle_command(service: MemoryService, user_key: str,
                 return "请先发送 /羽忆 开启。"
             if code == "auto_required":
                 return "请先发送 /羽忆 开启 自动。"
+            if code == "auth_failed":
+                return "主题记录已开启，但授权文件写入失败；请重试或查看日志。"
             return "主题记录已开启：事件里会带上固定主题枚举。"
         return "用法：/羽忆 开启 | 开启 自动 | 开启 主题。"
 

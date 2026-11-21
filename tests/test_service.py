@@ -334,12 +334,7 @@ def test_clear_boundary_with_fractional_events(
         service, feed, clock, make_event, enabled_user):
     clock.moment = clock.moment.replace(microsecond=600000)
     service.clear(enabled_user)
-    digest = user_key_hash(enabled_user)
-    feed.write_auth(Auth(
-        user_key_hash=digest,
-        generated_at=clock.now().strftime("%Y-%m-%dT%H:%M:%SZ"),
-        expires_at=(clock.now() + timedelta(days=180)).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        auto_history=True, store_topic=True, source="feather_memory/0.1.0"))
+    service.enable(enabled_user)
     feed.write_event(make_event(
         "01JBEFORE", enabled_user, topic_key="工作",
         created_at="2026-11-21T12:00:00.300000Z"))
@@ -396,6 +391,37 @@ def test_global_disabled_still_sweeps_shared_files(store, feed, clock):
     service.startup()
     assert feed.read_lease() is None
     assert feed.read_auth(digest) is None
+
+
+def test_enable_reports_auth_write_failure(service, feed, monkeypatch):
+    service.startup()
+
+    def boom(auth):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(feed, "write_auth", boom)
+    result = service.enable("aiocqhttp:1")
+    assert result["auth_ok"] is False
+    assert service.enable_auto("aiocqhttp:1") == "auth_failed"
+    assert service.disable_auto("aiocqhttp:1") == "auth_failed"
+
+
+def test_disabled_at_blocks_old_events_after_reenable(
+        service, feed, clock, make_event):
+    user = "aiocqhttp:1"
+    service.startup()
+    service.enable(user)
+    before_disable = format_ts(clock.now() - timedelta(seconds=1))
+    service.disable(user)
+    clock.advance(seconds=5)
+    service.enable(user)
+    feed.write_event(make_event("01JOLD", user, created_at=before_disable))
+    feed.write_event(make_event("01JNEW", user))
+    assert service.consume_pending(clock.now()) == 1
+    assert not feed.event_path("01JOLD").exists()
+    assert not feed.event_path("01JNEW").exists()
+    stats = service.store.topic_stats(user, clock.now())
+    assert [(item.topic_key, item.count) for item in stats] == [("工作", 1)]
 
 
 def test_status_counts_pending_events(service, feed, make_event, enabled_user):

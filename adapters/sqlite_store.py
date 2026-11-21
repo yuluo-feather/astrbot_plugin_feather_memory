@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS users (
   context_revision INTEGER NOT NULL DEFAULT 0,
   context_dirty INTEGER NOT NULL DEFAULT 0,
   cleared_at TEXT NOT NULL DEFAULT '',
+  disabled_at TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -82,14 +83,17 @@ class SqliteStore:
         self.path = Path(path)
 
     @contextmanager
-    def _connect(self):
+    def _connect(self, immediate: bool = False):
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(str(self.path), timeout=5.0)
+        conn = sqlite3.connect(str(self.path), timeout=5.0,
+                               isolation_level=None if immediate else "DEFERRED")
         conn.row_factory = sqlite3.Row
         try:
             conn.execute("PRAGMA busy_timeout = 5000")
             conn.execute("PRAGMA journal_mode = WAL")
             conn.execute("PRAGMA synchronous = NORMAL")
+            if immediate:
+                conn.execute("BEGIN IMMEDIATE")
             yield conn
             conn.commit()
         except Exception:
@@ -103,8 +107,12 @@ class SqliteStore:
             version = conn.execute("PRAGMA user_version").fetchone()[0]
             if version == 0:
                 conn.executescript(SCHEMA_V1)
-                conn.execute("PRAGMA user_version = 1")
-            elif version != 1:
+                conn.execute("PRAGMA user_version = 2")
+            elif version == 1:
+                conn.execute(
+                    "ALTER TABLE users ADD COLUMN disabled_at TEXT NOT NULL DEFAULT ''")
+                conn.execute("PRAGMA user_version = 2")
+            elif version != 2:
                 raise RuntimeError(f"unsupported feather_memory schema version {version}")
 
     # ---- users ---------------------------------------------------------
@@ -216,14 +224,15 @@ class SqliteStore:
         return removed
 
     def disable_user(self, user_key: str, now: datetime) -> None:
-        """关闭总开关：清三枚开关并递增 revision，挡住并发中的旧 context 重建。"""
+        """关闭总开关：清三枚开关、记录 disabled_at，挡住停用前的旧事件。"""
         stamp = format_ts(now)
+        disabled = format_ts_precise(now)
         with self._connect() as conn:
             conn.execute(
                 "UPDATE users SET enabled = 0, auto_history = 0, store_topic = 0,"
                 " context_revision = context_revision + 1, context_dirty = 0,"
-                " updated_at = ? WHERE user_key = ?",
-                (stamp, user_key),
+                " disabled_at = ?, updated_at = ? WHERE user_key = ?",
+                (disabled, stamp, user_key),
             )
 
     # ---- explicit memories --------------------------------------------
@@ -344,25 +353,28 @@ class SqliteStore:
                                 ensure_ascii=False, separators=(",", ":"))
         created_at = format_ts(parse_ts(event.created_at))
         created_moment = parse_ts(event.created_at)
-        with self._connect() as conn:
+        with self._connect(immediate=True) as conn:
             row = conn.execute(
-                "SELECT enabled, cleared_at FROM users WHERE user_key = ?",
+                "SELECT enabled, auto_history, store_topic, cleared_at, disabled_at"
+                " FROM users WHERE user_key = ?",
                 (event.user_key,),
             ).fetchone()
-            if row is None or not row["enabled"]:
+            if row is None or not row["enabled"] or not row["auto_history"]:
                 return "stale"
-            cleared_at = row["cleared_at"] or ""
-            if cleared_at:
+            for cutoff in (row["cleared_at"] or "", row["disabled_at"] or ""):
+                if not cutoff:
+                    continue
                 try:
-                    if created_moment <= parse_ts(cleared_at):
+                    if created_moment <= parse_ts(cutoff):
                         return "stale"
                 except ValueError:
                     return "stale"
+            topic_key = event.topic_key if row["store_topic"] else ""
             cursor = conn.execute(
                 "INSERT OR IGNORE INTO readings(event_id, user_key, created_at, kind, spread,"
                 " cards_json, topic_key, conversation_scope) VALUES(?,?,?,?,?,?,?,?)",
                 (event.event_id, event.user_key, created_at, event.kind, event.spread,
-                 cards_json, event.topic_key, event.conversation_scope),
+                 cards_json, topic_key, event.conversation_scope),
             )
             if cursor.rowcount == 0:
                 return "duplicate"

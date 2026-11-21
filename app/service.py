@@ -80,6 +80,7 @@ class MemoryService:
         self.started_at = format_ts(clock())
         self._state = "new"
         self._lifecycle_lock = threading.Lock()
+        self._state_lock = threading.Lock()
         self._last_lease: datetime | None = None
         self._last_cleanup: datetime | None = None
         self._last_auth_refresh: datetime | None = None
@@ -230,6 +231,9 @@ class MemoryService:
         if not user["enabled"]:
             self.log.info("丢弃事件 %s：用户总开关关闭", event.event_id)
             return None
+        if not user["auto_history"]:
+            self.log.info("丢弃事件 %s：自动历史关闭（数据库）", event.event_id)
+            return None
         digest = user_key_hash(event.user_key)
         auth = self.feed.read_auth(digest)
         if auth is None:
@@ -239,21 +243,22 @@ class MemoryService:
             self.log.info("丢弃事件 %s：授权已过期", event.event_id)
             return None
         if not auth.auto_history:
-            self.log.info("丢弃事件 %s：自动历史关闭", event.event_id)
+            self.log.info("丢弃事件 %s：自动历史关闭（授权）", event.event_id)
             return None
         if auth.user_key_hash != digest:
             self.log.info("丢弃事件 %s：授权身份不匹配", event.event_id)
             return None
-        cleared_at = user.get("cleared_at") or ""
-        if cleared_at:
+        for cutoff in (user.get("cleared_at") or "", user.get("disabled_at") or ""):
+            if not cutoff:
+                continue
             try:
-                if parse_ts(event.created_at) <= parse_ts(cleared_at):
-                    self.log.info("丢弃事件 %s：早于清空时间", event.event_id)
+                if parse_ts(event.created_at) <= parse_ts(cutoff):
+                    self.log.info("丢弃事件 %s：早于清空或停用时间", event.event_id)
                     return None
             except ValueError:
-                self.log.info("丢弃事件 %s：清空时间不可解析", event.event_id)
+                self.log.info("丢弃事件 %s：清空/停用时间不可解析", event.event_id)
                 return None
-        if not auth.store_topic and event.topic_key:
+        if not user["store_topic"] and event.topic_key:
             return replace(event, topic_key="")
         return event
 
@@ -341,26 +346,28 @@ class MemoryService:
     def refresh_auth(self, user_key: str, now: datetime | None = None) -> bool:
         now = now or self.clock()
         digest = user_key_hash(user_key)
-        user = self.store.get_user(user_key)
-        if user is None:
-            return False
-        if not user["enabled"]:
-            self.feed.delete_auth(digest)
-            return False
-        auth = Auth(
-            user_key_hash=digest,
-            generated_at=format_ts(now),
-            expires_at=format_ts(add_days(now, AUTH_TTL_DAYS)),
-            auto_history=bool(user["auto_history"]),
-            store_topic=bool(user["store_topic"]),
-            source=self.source,
-        )
-        try:
-            self.feed.write_auth(auth)
-        except (OSError, ContractError) as exc:
-            self.log.warning("授权文件写入失败：%s", exc)
-            return False
-        return True
+        with self._state_lock:
+            # 关闭 / 清空与授权刷新互斥：刷新前在锁内重读用户状态。
+            user = self.store.get_user(user_key)
+            if user is None:
+                return False
+            if not user["enabled"]:
+                self.feed.delete_auth(digest)
+                return False
+            auth = Auth(
+                user_key_hash=digest,
+                generated_at=format_ts(now),
+                expires_at=format_ts(add_days(now, AUTH_TTL_DAYS)),
+                auto_history=bool(user["auto_history"]),
+                store_topic=bool(user["store_topic"]),
+                source=self.source,
+            )
+            try:
+                self.feed.write_auth(auth)
+            except (OSError, ContractError) as exc:
+                self.log.warning("授权文件写入失败：%s", exc)
+                return False
+            return True
 
     def refresh_auth_all(self, now: datetime | None = None) -> None:
         now = now or self.clock()
@@ -399,17 +406,20 @@ class MemoryService:
         user = self.store.ensure_user(user_key, now)
         self.store.set_user_flags(
             user_key, now, enabled=1, auto_history=1, store_topic=1)
-        self.refresh_auth(user_key, now)
+        auth_ok = self.refresh_auth(user_key, now)
         self.rebuild_context(user_key, now)
         self.log.info("开关：enable-all(%s)", self._tag(user_key))
-        return self.store.get_user(user_key) or user
+        result = dict(self.store.get_user(user_key) or user)
+        result["auth_ok"] = auth_ok
+        return result
 
     def enable_auto(self, user_key: str) -> str:
         now = self.clock()
         code = self.store.set_flag_if_enabled(user_key, now, auto_history=1)
         if code != "ok":
             return code
-        self.refresh_auth(user_key, now)
+        if not self.refresh_auth(user_key, now):
+            return "auth_failed"
         self.rebuild_context(user_key, now)
         self.log.info("开关：auto(%s)=1", self._tag(user_key))
         return "ok"
@@ -420,7 +430,8 @@ class MemoryService:
             user_key, now, store_topic=1, require_auto=True)
         if code != "ok":
             return code
-        self.refresh_auth(user_key, now)
+        if not self.refresh_auth(user_key, now):
+            return "auth_failed"
         self.rebuild_context(user_key, now)
         self.log.info("开关：topic(%s)=1", self._tag(user_key))
         return "ok"
@@ -432,10 +443,11 @@ class MemoryService:
         if user is None:
             return "missing"
         self.store.set_user_flags(user_key, now, auto_history=0)
+        auth_ok = True
         if user["enabled"]:
-            self.refresh_auth(user_key, now)
+            auth_ok = self.refresh_auth(user_key, now)
         self.log.info("开关：auto(%s)=0", self._tag(user_key))
-        return "ok"
+        return "ok" if auth_ok else "auth_failed"
 
     def disable_topic(self, user_key: str) -> str:
         """只关主题记录；自动历史与已存数据不动。"""
@@ -444,17 +456,19 @@ class MemoryService:
         if user is None:
             return "missing"
         self.store.set_user_flags(user_key, now, store_topic=0)
+        auth_ok = True
         if user["enabled"]:
-            self.refresh_auth(user_key, now)
+            auth_ok = self.refresh_auth(user_key, now)
         self.log.info("开关：topic(%s)=0", self._tag(user_key))
-        return "ok"
+        return "ok" if auth_ok else "auth_failed"
 
     def disable(self, user_key: str) -> int:
         now = self.clock()
         self.store.ensure_user(user_key, now)
-        self.store.disable_user(user_key, now)
         digest = user_key_hash(user_key)
-        self.feed.delete_auth(digest)
+        with self._state_lock:
+            self.store.disable_user(user_key, now)
+            self.feed.delete_auth(digest)
         if self._drop_context(user_key, now):
             self.store.set_context_dirty(user_key, False, now)
         removed = self.feed.remove_events_for_user(user_key)
@@ -464,9 +478,10 @@ class MemoryService:
     def clear(self, user_key: str) -> int:
         now = self.clock()
         self.store.ensure_user(user_key, now)
-        self.store.clear_user_data(user_key, now)
         digest = user_key_hash(user_key)
-        self.feed.delete_auth(digest)
+        with self._state_lock:
+            self.store.clear_user_data(user_key, now)
+            self.feed.delete_auth(digest)
         if self._drop_context(user_key, now):
             self.store.set_context_dirty(user_key, False, now)
         removed = self.feed.remove_events_for_user(user_key)

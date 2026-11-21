@@ -8,6 +8,7 @@ from data.plugins.astrbot_plugin_feather_memory.app.chat import (
     handle_command,
 )
 from data.plugins.astrbot_plugin_feather_memory.app.service import MemoryService
+from data.plugins.astrbot_plugin_feather_memory.core.identity import user_key_hash
 
 USER = "aiocqhttp:123456"
 
@@ -49,6 +50,8 @@ def test_full_command_flow(service):
 
     assert handle_command(service, USER, True, "忘记 1") == "已删除 #1。"
     assert handle_command(service, USER, True, "忘记 1") == "没有找到 #1。"
+    listing = handle_command(service, USER, True, "")
+    assert "#1" not in listing
 
 
 def test_remember_category_prefix(service):
@@ -111,6 +114,8 @@ def test_global_disabled_still_allows_close_and_clear(store, feed, clock):
     service.refresh_auth(USER, clock.now())
     service.store.save_memory(USER, "preference", "喜欢温柔", "喜欢温柔", clock.now())
     assert "已关闭羽忆" in handle_command(service, USER, True, "关闭")
+    assert service.user_state(USER)["enabled"] == 0
+    assert feed.read_auth(user_key_hash(USER)) is None
     service.store.save_memory(USER, "preference", "喜欢雨天", "喜欢雨天", clock.now())
     assert handle_command(service, USER, True, "清空").startswith("确认清空你的")
     assert handle_command(service, USER, True, "确认").startswith("已清空你的")
@@ -122,6 +127,8 @@ def test_group_only_allows_status_and_disable(service):
     service.enable(USER)
     assert handle_command(service, USER, False, "") == PRIVATE_ONLY_TEXT
     assert handle_command(service, USER, False, "记住 喜欢温柔") == PRIVATE_ONLY_TEXT
+    assert handle_command(service, USER, False, "关闭 自动") == PRIVATE_ONLY_TEXT
+    assert handle_command(service, USER, False, "关闭 主题") == PRIVATE_ONLY_TEXT
     status = handle_command(service, USER, False, "状态")
     assert "群聊内不展示个人记忆与主题" in status
     assert "已关闭羽忆" in handle_command(service, USER, False, "关闭")

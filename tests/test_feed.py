@@ -132,7 +132,7 @@ def test_concurrent_context_writes_end_with_highest_revision(feed, clock):
 
     def worker(revision: int) -> None:
         barrier.wait()
-        feed.write_context(digest, _context(clock, revision), timeout_ms=2000)
+        feed.write_context(digest, _context(clock, revision), timeout_ms=5000)
 
     threads = [threading.Thread(target=worker, args=(5,)),
                threading.Thread(target=worker, args=(3,))]

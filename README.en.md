@@ -45,19 +45,19 @@ Feather Memory does not touch the framework KV store and does not import Star Fe
 - 🔁 **Revocable**: `/羽忆 关闭` immediately deletes auth, context and pending events; saved memories remain until `/羽忆 清空`
 - 🧩 **Plug and play**: if Feather Memory is absent, the lease is stale or the shared directory is missing, Star Feather simply behaves as if there were no memory
 - 🗂️ **Two sources merged**: explicit entries and recent topics become one context block of at most 600 characters and 5 items, valid for 30 days
-- 🔒 **Group isolation**: no personal memory is shown or saved in group chats; only `/羽忆 状态` and `/羽忆 关闭` are accepted there
+- 🔒 **Group isolation**: no personal memory is shown or saved in group chats; only `/羽忆 状态` and `/羽忆 关闭` (without arguments) are accepted there, and partial disables are private-chat only
 - 🧱 **Cross-platform file locks**: POSIX `fcntl` and Windows `msvcrt` each have their own implementation; context writes are serialized and a crashed process releases its lock via the OS
 
 ## 🃏 Commands
 
-> Saving and viewing are private-chat only. In group chats only `/羽忆 状态` and `/羽忆 关闭` are accepted, and no personal memory content is shown.
+> Saving and viewing are private-chat only. In group chats only `/羽忆 状态` and `/羽忆 关闭` (without arguments) are accepted, and no personal memory content is shown; `关闭 自动` / `关闭 主题` are private-chat only.
 
 | Feature | Command | Description |
 |---------|---------|-------------|
 | 📖 View | `/羽忆` | List saved entries and recent topics |
 | ✍️ Remember | `/羽忆 记住 <text>` | Save a preference / background / goal (optional `偏好` / `背景` / `目标` prefix; enables the master switch) |
 | 🗑️ Forget | `/羽忆 忘记 <id>` | Delete one saved entry (ids look like `#12` in the list) |
-| 🧹 Clear | `/羽忆 清空` | Clear **your own** Feather Memory data after a second confirmation (reply `确认` within 60 seconds, or send `/羽忆 清空 确认`) |
+| 🧹 Clear | `/羽忆 清空` | Clear **your own** Feather Memory data after a second confirmation (send `/羽忆 清空 确认` within 60 seconds) |
 | 🔛 Enable | `/羽忆 开启` | Turn on the master switch, auto history and topic recording in one step (one auth write) |
 | 🤖 Auto history | `/羽忆 开启 自动` | Fine-grained: allow private normal readings to feed recent topics (idempotent) |
 | 🏷️ Topic recording | `/羽忆 开启 主题` | Fine-grained: allow events to carry the fixed topic enum (idempotent, requires auto history first) |

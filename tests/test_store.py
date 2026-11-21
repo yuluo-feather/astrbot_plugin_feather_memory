@@ -19,8 +19,29 @@ def _count(store, table: str) -> int:
 
 def test_initialize_sets_user_version_and_is_idempotent(store):
     with sqlite3.connect(store.path) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
     store.initialize()
+
+
+def test_migrates_v1_users_table(tmp_path):
+    from data.plugins.astrbot_plugin_feather_memory.adapters.sqlite_store import (
+        SqliteStore,
+    )
+
+    path = tmp_path / "v1.sqlite3"
+    with sqlite3.connect(path) as conn:
+        conn.execute(
+            "CREATE TABLE users (user_key TEXT PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 0,"
+            " auto_history INTEGER NOT NULL DEFAULT 0, store_topic INTEGER NOT NULL DEFAULT 0,"
+            " context_revision INTEGER NOT NULL DEFAULT 0, context_dirty INTEGER NOT NULL DEFAULT 0,"
+            " cleared_at TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,"
+            " updated_at TEXT NOT NULL)")
+        conn.execute("PRAGMA user_version = 1")
+    SqliteStore(path).initialize()
+    with sqlite3.connect(path) as conn:
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
+        assert "disabled_at" in columns
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
 
 
 def test_unsupported_user_version_rejected(tmp_path):
@@ -30,7 +51,7 @@ def test_unsupported_user_version_rejected(tmp_path):
 
     path = tmp_path / "future.sqlite3"
     with sqlite3.connect(path) as conn:
-        conn.execute("PRAGMA user_version = 2")
+        conn.execute("PRAGMA user_version = 3")
     with pytest.raises(RuntimeError):
         SqliteStore(path).initialize()
 
@@ -67,20 +88,62 @@ def test_upsert_memory_dedupes_same_normalized(store, clock):
 def test_insert_reading_guarded_states(store, clock, make_event):
     user = "aiocqhttp:1"
     store.ensure_user(user, clock.now())
-    store.set_user_flags(user, clock.now(), enabled=1)
+    store.set_user_flags(user, clock.now(), enabled=1, auto_history=1)
     event = make_event("01JGUARD", user)
     assert store.insert_reading_guarded(event, clock.now()) == "inserted"
     assert store.insert_reading_guarded(event, clock.now()) == "duplicate"
     store.disable_user(user, clock.now())
     assert store.insert_reading_guarded(
         make_event("01JGUARD2", user), clock.now()) == "stale"
+    with sqlite3.connect(store.path) as conn:
+        assert conn.execute(
+            "SELECT COUNT(*) FROM readings WHERE event_id = ?", ("01JGUARD2",)
+        ).fetchone()[0] == 0
+
+
+def test_insert_reading_guarded_requires_auto_history(store, clock, make_event):
+    user = "aiocqhttp:1"
+    store.ensure_user(user, clock.now())
+    store.set_user_flags(user, clock.now(), enabled=1, auto_history=0)
+    assert store.insert_reading_guarded(
+        make_event("01JAUTO", user), clock.now()) == "stale"
+
+
+def test_insert_reading_guarded_clears_topic_when_store_topic_off(store, clock, make_event):
+    user = "aiocqhttp:1"
+    store.ensure_user(user, clock.now())
+    store.set_user_flags(user, clock.now(), enabled=1, auto_history=1, store_topic=0)
+    assert store.insert_reading_guarded(
+        make_event("01JTOPIC", user, topic_key="工作"), clock.now()) == "inserted"
+    with sqlite3.connect(store.path) as conn:
+        row = conn.execute(
+            "SELECT topic_key FROM readings WHERE event_id = ?", ("01JTOPIC",)
+        ).fetchone()
+    assert row[0] == ""
+
+
+def test_insert_reading_guarded_respects_disabled_at(store, clock, make_event):
+    user = "aiocqhttp:1"
+    store.ensure_user(user, clock.now())
+    store.set_user_flags(user, clock.now(), enabled=1, auto_history=1, store_topic=1)
+    store.disable_user(user, clock.now())
+    disabled_at = store.get_user(user)["disabled_at"]
+    store.set_user_flags(user, clock.now(), enabled=1, auto_history=1, store_topic=1)
+    before = format_ts(clock.now() - timedelta(seconds=1))
+    after = format_ts(clock.now() + timedelta(seconds=1))
+    assert store.insert_reading_guarded(
+        make_event("01JDIS", user, created_at=before), clock.now()) == "stale"
+    assert store.insert_reading_guarded(
+        make_event("01JDIS2", user, created_at=after), clock.now()) == "inserted"
+    assert disabled_at
 
 
 def test_insert_reading_guarded_respects_cleared_at(store, clock, make_event):
     user = "aiocqhttp:1"
     store.ensure_user(user, clock.now())
-    store.set_user_flags(user, clock.now(), enabled=1)
+    store.set_user_flags(user, clock.now(), enabled=1, auto_history=1, store_topic=1)
     store.clear_user_data(user, clock.now())
+    store.set_user_flags(user, clock.now(), auto_history=1, store_topic=1)
     before = format_ts(clock.now() - timedelta(seconds=1))
     after = format_ts(clock.now() + timedelta(seconds=1))
     assert store.insert_reading_guarded(
@@ -94,8 +157,10 @@ def test_set_flag_if_enabled(store, clock):
     store.ensure_user(user, clock.now())
     store.set_user_flags(user, clock.now(), enabled=1)
     assert store.set_flag_if_enabled(user, clock.now(), auto_history=1) == "ok"
+    assert store.get_user(user)["auto_history"] == 1
     assert store.set_flag_if_enabled(
         user, clock.now(), store_topic=1, require_auto=True) == "ok"
+    assert store.get_user(user)["store_topic"] == 1
     store.set_user_flags(user, clock.now(), auto_history=0)
     assert store.set_flag_if_enabled(
         user, clock.now(), store_topic=1, require_auto=True) == "auto_required"
