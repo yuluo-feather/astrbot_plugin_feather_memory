@@ -176,6 +176,7 @@ Restart AstrBot and the plugin loads automatically.
   - Adapters: `adapters/` (`host.py` host registration and identity, `memory_feed.py` shared-file IO, `sqlite_store.py` storage and migrations, `file_lock.py` cross-platform locks)
   - Pure logic: `core/` (`contracts.py` contract models, `identity.py` user keys, `topics.py` topic classifier, `merge.py` merging two sources, `ids.py` ULIDs, `timeutil.py` time)
 - **Storage**: `data/plugin_data/feather_memory/feather_memory.sqlite3`, WAL mode, `user_version` migrations; a memory change and its revision bump happen in one transaction.
+- **Consistency**: context clears dirty only when the snapshot revision still matches; state transitions are serialized under one re-entrant lock, with lock order state → file lock.
 - **Shared files**: `lease.json`, `auth/<sha256>.json`, `events/<event_id>.json`, `context/<sha256>.json` under `data/plugin_data/_shared/feather_memory/v1/`. Every write is "temp file + `os.replace`"; context writes run "read revision → write temp → replace" inside a cross-process file lock.
 - **Contract**: field and failure semantics in [`docs/contracts_v1.md`](docs/contracts_v1.md); v1 only adds fields, breaking changes go to a v2 directory.
 - **Tests and CI**: `tests/` covers contracts, lease, auth, identity, group isolation, topics, consumption, context, decoupling and state. CI runs `compileall` + `ruff` + `mypy` + `pytest` across Ubuntu / Windows × Python 3.12 / 3.13 (four jobs), verification only — no deployment.

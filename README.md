@@ -176,6 +176,7 @@ git clone https://github.com/yuluo-feather/astrbot_plugin_feather_memory.git
   - 适配层：`adapters/`（`host.py` 宿主注册与身份解析、`memory_feed.py` 共享文件读写、`sqlite_store.py` 存储与迁移、`file_lock.py` 跨平台文件锁）
   - 纯逻辑层：`core/`（`contracts.py` 契约模型、`identity.py` 用户键、`topics.py` 主题分类、`merge.py` 双来源合并、`ids.py` ULID、`timeutil.py` 时间）
 - **存储**：`data/plugin_data/feather_memory/feather_memory.sqlite3`，WAL 模式，`user_version` 迁移；记忆变更与 revision 递增在同一事务里完成。
+- **一致性**：context 写后按快照 revision 条件清 dirty；开关状态转换在同一把可重入锁里串行化，锁序 state → 文件锁。
 - **共享文件**：`data/plugin_data/_shared/feather_memory/v1/` 下的 `lease.json`、`auth/<sha256>.json`、`events/<event_id>.json`、`context/<sha256>.json`；所有写入都是「临时文件 + `os.replace`」，context 写入在跨进程文件锁内完成「读 revision → 写临时文件 → replace」。
 - **契约**：字段与失败语义见 [`docs/contracts_v1.md`](docs/contracts_v1.md)；契约只增字段、不改语义，破坏性变更走 v2 目录。
 - **测试与 CI**：`tests/` 覆盖契约、租约、授权、身份、群聊、主题、消费、context、解耦与状态；CI 在 Ubuntu / Windows × Python 3.12 / 3.13 四格跑 `compileall` + `ruff` + `mypy` + `pytest`，只核验、不部署。

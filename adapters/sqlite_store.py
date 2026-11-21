@@ -170,6 +170,18 @@ class SqliteStore:
                 (1 if dirty else 0, format_ts(now), user_key),
             )
 
+    def clear_dirty_if_revision(self, user_key: str, revision: int,
+                                now: datetime, *, require_enabled: bool = True) -> bool:
+        """只有 revision（与启用状态）仍匹配快照时才清 dirty。"""
+        guard = " AND enabled = 1" if require_enabled else " AND enabled = 0"
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "UPDATE users SET context_dirty = 0, updated_at = ?"
+                " WHERE user_key = ? AND context_revision = ?" + guard,
+                (format_ts(now), user_key, revision),
+            )
+        return cursor.rowcount > 0
+
     def bump_revision(self, user_key: str, now: datetime) -> int:
         stamp = format_ts(now)
         with self._connect() as conn:
