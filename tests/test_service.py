@@ -139,13 +139,33 @@ def test_duplicate_event_not_counted_twice(
     assert [(item.topic_key, item.count) for item in stats] == [("工作", 1)]
 
 
-def test_event_without_auth_is_dropped(service, feed, clock, make_event):
+def test_first_event_enrolls_new_user(service, feed, clock, make_event):
+    service.startup()
+    user = "aiocqhttp:999"
+    feed.write_event(make_event("01J1", user))
+    assert service.consume_pending(clock.now()) == 1
+    row = service.user_state(user)
+    assert row is not None
+    assert (row["enabled"], row["auto_history"], row["store_topic"]) == (1, 1, 1)
+    auth = feed.read_auth(user_key_hash(user))
+    assert auth is not None
+    assert auth.auto_history is True and auth.store_topic is True
+    stats = service.store.topic_stats(user, clock.now())
+    assert [(item.topic_key, item.count) for item in stats] == [("工作", 1)]
+    assert feed.read_context(user_key_hash(user)) is not None
+
+
+def test_event_for_unknown_user_dropped_when_auto_enroll_off(
+        store, feed, clock, make_event):
+    service = MemoryService(store, feed, global_enabled=True, version="0.1.0",
+                            clock=clock.now, auto_enroll=False)
     service.startup()
     user = "aiocqhttp:999"
     feed.write_event(make_event("01J1", user))
     assert service.consume_pending(clock.now()) == 0
     assert not feed.event_path("01J1").exists()
-    assert service.store.topic_stats(user, clock.now()) == []
+    assert service.user_state(user) is None
+    assert feed.read_auth(user_key_hash(user)) is None
 
 
 def test_expired_auth_event_dropped(service, feed, clock, make_event, enabled_user):
@@ -189,14 +209,17 @@ def test_expired_lease_blocks_consumption(service, feed, clock, make_event, enab
     assert not event_path.exists()
 
 
-def test_disable_removes_auth_context_events_but_keeps_memories(
+def test_disable_writes_tombstone_and_clears_context_events(
         service, feed, clock, make_event, enabled_user):
     feed.write_event(make_event("01J1", enabled_user))
     service.consume_pending(clock.now())
     service.remember(enabled_user, "喜欢温柔")
     service.disable(enabled_user)
     digest = user_key_hash(enabled_user)
-    assert feed.read_auth(digest) is None
+    auth = feed.read_auth(digest)
+    assert auth is not None
+    assert auth.user_key_hash == digest
+    assert auth.auto_history is False and auth.store_topic is False
     assert feed.read_context(digest) is None
     assert feed.iter_events() == []
     row = service.user_state(enabled_user)
@@ -214,7 +237,9 @@ def test_clear_sets_cleared_at_and_blocks_old_events(
     digest = user_key_hash(enabled_user)
     assert service.store.count_memories(enabled_user) == 0
     assert service.store.topic_stats(enabled_user, clock.now()) == []
-    assert feed.read_auth(digest) is None
+    auth = feed.read_auth(digest)
+    assert auth is not None and auth.auto_history is True
+    assert service.user_state(enabled_user)["enabled"] == 1
 
     feed.write_auth(Auth(
         user_key_hash=digest,
@@ -466,30 +491,31 @@ def test_disable_collects_failures_and_retries(
     feed.write_event(make_event("01J1", enabled_user))
     calls = {"auth": 0, "context": 0}
 
-    def fail_auth(digest):
+    def fail_auth(auth):
         calls["auth"] += 1
-        return False
+        raise OSError("disk full")
 
     def fail_context(digest, timeout_ms=1000):
         calls["context"] += 1
         return False
 
-    monkeypatch.setattr(feed, "delete_auth", fail_auth)
+    monkeypatch.setattr(feed, "write_auth", fail_auth)
     monkeypatch.setattr(feed, "delete_context", fail_context)
     removed, failures = service.disable(enabled_user)
     assert removed == 1
-    assert failures == ["auth", "context"]
-    assert calls == {"auth": 2, "context": 2}
+    assert failures == ["context", "auth"]
+    assert calls == {"auth": 1, "context": 2}
     assert feed.iter_events() == []
     assert service.user_state(enabled_user)["context_dirty"] == 1
 
 
-def test_clear_collects_auth_failure(service, feed, monkeypatch, enabled_user):
+def test_clear_collects_context_failure(service, feed, monkeypatch, enabled_user):
     service.remember(enabled_user, "喜欢温柔")
-    monkeypatch.setattr(feed, "delete_auth", lambda digest: False)
+    monkeypatch.setattr(feed, "delete_context",
+                        lambda digest, timeout_ms=1000: False)
     removed, failures = service.clear(enabled_user)
     assert removed == 0
-    assert failures == ["auth"]
+    assert failures == ["context"]
     assert service.store.count_memories(enabled_user) == 0
 
 
@@ -532,3 +558,96 @@ def test_status_counts_pending_events(service, feed, make_event, enabled_user):
 def test_context_write_timeout_constant_is_exposed():
     assert WRITE_TIMEOUT == "timeout"
     assert os.name in ("nt", "posix")
+
+
+def test_lease_carries_auto_enroll_config(service, feed):
+    service.startup()
+    lease = feed.read_lease()
+    assert lease is not None and lease.auto_enroll is True
+
+
+def test_lease_auto_enroll_can_be_disabled(store, feed, clock):
+    service = MemoryService(store, feed, global_enabled=True, version="0.1.0",
+                            clock=clock.now, auto_enroll=False)
+    service.startup()
+    lease = feed.read_lease()
+    assert lease is not None and lease.auto_enroll is False
+
+
+def test_startup_reconciles_missing_auth(service, feed, clock, enabled_user):
+    disabled = "aiocqhttp:777"
+    service.enable(disabled)
+    service.disable(disabled)
+    digest_enabled = user_key_hash(enabled_user)
+    digest_disabled = user_key_hash(disabled)
+    feed.delete_auth(digest_enabled)
+    feed.delete_auth(digest_disabled)
+
+    service.startup()
+
+    enabled_auth = feed.read_auth(digest_enabled)
+    disabled_auth = feed.read_auth(digest_disabled)
+    assert enabled_auth is not None and enabled_auth.auto_history is True
+    assert disabled_auth is not None
+    assert disabled_auth.auto_history is False
+    assert disabled_auth.store_topic is False
+
+
+def test_cleanup_restores_missing_tombstone(service, feed, clock):
+    user = "aiocqhttp:777"
+    service.enable(user)
+    service.disable(user)
+    digest = user_key_hash(user)
+    feed.delete_auth(digest)
+
+    service.cleanup(clock.now())
+
+    auth = feed.read_auth(digest)
+    assert auth is not None and auth.auto_history is False
+
+
+def test_event_for_disabled_user_is_dropped_and_keeps_tombstone(
+        service, feed, clock, make_event):
+    user = "aiocqhttp:777"
+    service.startup()
+    service.enable(user)
+    service.disable(user)
+    digest = user_key_hash(user)
+    feed.delete_auth(digest)
+    feed.write_event(make_event("01J1", user))
+
+    assert service.consume_pending(clock.now()) == 0
+
+    assert service.user_state(user)["enabled"] == 0
+    auth = feed.read_auth(digest)
+    assert auth is not None and auth.auto_history is False
+    assert not feed.event_path("01J1").exists()
+
+
+def test_duplicate_event_does_not_reenable_disabled_user(
+        service, feed, clock, make_event):
+    user = "aiocqhttp:777"
+    service.startup()
+    service.enable(user)
+    service.disable(user)
+    event = make_event("01J1", user)
+    feed.write_event(event)
+    service.consume_pending(clock.now())
+    feed.write_event(event)
+
+    assert service.consume_pending(clock.now()) == 0
+    assert service.user_state(user)["enabled"] == 0
+    assert not feed.event_path("01J1").exists()
+
+
+def test_clear_keeps_auth_and_switches(service, feed, clock, enabled_user):
+    before = feed.read_auth(user_key_hash(enabled_user))
+    service.remember(enabled_user, "喜欢温柔")
+
+    service.clear(enabled_user)
+
+    after = feed.read_auth(user_key_hash(enabled_user))
+    assert after is not None and after == before
+    row = service.user_state(enabled_user)
+    assert (row["enabled"], row["auto_history"], row["store_topic"]) == (1, 1, 1)
+    assert service.store.count_memories(enabled_user) == 0

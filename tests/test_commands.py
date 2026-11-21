@@ -124,7 +124,9 @@ def test_clear_requires_confirmation(service, clock):
     handle_command(service, USER, True, "记住 喜欢温柔")
     first = handle_command(service, USER, True, "清空")
     assert first.startswith("确认清空")
-    assert handle_command(service, USER, True, "清空 确认") == "已清空你的羽忆数据，并关闭自动历史与主题记录。"
+    assert handle_command(service, USER, True, "清空 确认") == (
+        "已清空你的羽忆数据；只删除已有数据，之后仍会继续记录；"
+        "要停止请发送 /羽忆 关闭。")
 
 
 def test_clear_confirmation_expires(service, clock):
@@ -140,7 +142,9 @@ def test_standalone_confirm_clears(service):
     handle_command(service, USER, True, "开启")
     handle_command(service, USER, True, "记住 喜欢温柔")
     assert handle_command(service, USER, True, "清空").startswith("确认清空你的")
-    assert handle_command(service, USER, True, "确认") == "已清空你的羽忆数据，并关闭自动历史与主题记录。"
+    assert handle_command(service, USER, True, "确认") == (
+        "已清空你的羽忆数据；只删除已有数据，之后仍会继续记录；"
+        "要停止请发送 /羽忆 关闭。")
 
 
 def test_confirm_without_request(service):
@@ -156,17 +160,21 @@ def test_forget_accepts_hash_prefix(service):
 
 
 def test_disable_failure_message(service, feed, monkeypatch, enabled_user):
-    monkeypatch.setattr(feed, "delete_auth", lambda digest: False)
+    def boom(auth):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(feed, "write_auth", boom)
     reply = handle_command(service, enabled_user, True, "关闭")
     assert reply.startswith("已关闭，但文件清理未完成（auth")
 
 
 def test_clear_failure_message(service, feed, monkeypatch, enabled_user):
     service.remember(enabled_user, "喜欢温柔")
-    monkeypatch.setattr(feed, "delete_auth", lambda digest: False)
+    monkeypatch.setattr(feed, "delete_context",
+                        lambda digest, timeout_ms=1000: False)
     assert handle_command(service, enabled_user, True, "清空").startswith("确认清空")
     reply = handle_command(service, enabled_user, True, "清空 确认")
-    assert reply.startswith("已清空，但文件清理未完成（auth")
+    assert reply.startswith("已清空，但文件清理未完成（context")
 
 
 def test_list_footer_has_delete_and_modify(service):
@@ -227,7 +235,8 @@ def test_global_disabled_still_allows_close_and_clear(store, feed, clock):
     service.store.save_memory(USER, "preference", "喜欢温柔", "喜欢温柔", clock.now())
     assert "已关闭羽忆" in handle_command(service, USER, True, "关闭")
     assert service.user_state(USER)["enabled"] == 0
-    assert feed.read_auth(user_key_hash(USER)) is None
+    auth = feed.read_auth(user_key_hash(USER))
+    assert auth is not None and auth.auto_history is False
     service.store.save_memory(USER, "preference", "喜欢雨天", "喜欢雨天", clock.now())
     assert handle_command(service, USER, True, "清空").startswith("确认清空你的")
     assert handle_command(service, USER, True, "确认").startswith("已清空你的")

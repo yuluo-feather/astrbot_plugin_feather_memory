@@ -4,6 +4,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 from data.plugins.astrbot_plugin_feather_memory.adapters.host import (
+    auto_enroll,
     command_argument,
     is_private_chat,
     memory_enabled,
@@ -114,3 +115,11 @@ def test_memory_enabled_config():
     assert memory_enabled({"memory": {"enabled": False}}) is False
     assert memory_enabled({}) is False
     assert memory_enabled(None) is False
+
+
+def test_auto_enroll_config():
+    assert auto_enroll({"memory": {"auto_enroll": False}}) is False
+    assert auto_enroll({"memory": {"auto_enroll": True}}) is True
+    assert auto_enroll({"memory": {}}) is True
+    assert auto_enroll({}) is True
+    assert auto_enroll(None) is True

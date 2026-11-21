@@ -35,8 +35,10 @@ data/plugin_data/_shared/feather_memory/v1/
 | `refreshed_at` | string | UTC ISO-8601 `Z` |
 | `expires_at` | string | UTC ISO-8601 `Z`；TTL 5 分钟 |
 | `source` | string | `feather_memory/{version}` |
+| `auto_enroll` | bool（可选） | 羽忆是否自动登记新用户；缺失时核心按 `false` 处理（旧行为） |
 
 - 羽忆启用时写，运行期每 60 秒刷新；优雅关闭时仅删除 `instance_id` 相同的租约。
+- `auto_enroll` 由羽忆按自己的 `memory.auto_enroll` 写入（默认 `true`）；旧星羽忽略该字段，两边都升级后才生效。
 - 租约写入与删除都在 `lease.lock` 内完成；删除前在锁内复查 `instance_id`，避免误删新实例的租约。
 - 核心在写事件、读 context 前都先读租约；缺失 / 过期 / schema 不符 → 按无羽忆处理。
 - 租约是**服务存活**，不是用户记忆过期；授权 TTL 另算。
@@ -55,7 +57,9 @@ data/plugin_data/_shared/feather_memory/v1/
 
 - 核心写事件前依次检查：租约有效 → 授权文件存在、未过期、schema 相符 → `auto_history=true`。
 - `store_topic=false` 时核心必须写空 `topic_key`。
-- 羽忆在启动、用户命令、每日维护时刷新；用户关闭 / 清空时删除。
+- 羽忆在启动、用户命令、每日维护时刷新。停用用户写「墓碑」（文件保留，`auto_history=false`、`store_topic=false`），**不删除授权文件**；这样核心不会把文件缺失当成「首次出现」，也不会再投递。
+- 清空不改变授权文件；用户仍处于开启状态，之后会继续记录。
+- 停用用户缺授权文件时，每小时维护补写墓碑；`refresh_auth_all` 遍历全部用户（启用写真实授权，停用写墓碑），随每日维护续期。
 - `auth/{sha}.json` 的写入、删除与清扫共用 `auth/{sha}.lock`；清扫在锁内重新解析 `expires_at` 后再删。
 
 ## 3. 事件 `star_feather.reading_event.v1`
@@ -95,6 +99,9 @@ PENDING
 - 裁定（2026-11-21）：租约失效保留事件、授权失效删除事件。租约是服务自检，
   瞬时写入失败不应导致已授权事件被丢弃；授权失效（文件缺失 / 过期 / `auto_history=false`）
   代表用户不再允许采集，必须删除事件。
+- 默认登记：`users` 无记录且羽忆 `auto_enroll=true` 时，首条合格事件自动建立用户（`enabled=1, auto_history=1, store_topic=1`）并写授权，随后正常消费；`auto_enroll=false` 时丢弃。
+- 已有记录且 `enabled=0`：丢弃事件并确保墓碑存在，不得重新启用。
+- 授权文件缺失：羽忆先补写一次再校验；仍缺失或已过期则丢弃事件。
 - 停用会写 `users.disabled_at`；重新启用不清除它，`created_at <= disabled_at` 的事件一律丢弃。
 - 先提交、后删除；删除失败只记 warning，不回滚数据库。
 - 消费提交前在同一个 SQLite 写事务里复查 `users.enabled` 与 `cleared_at`；
@@ -158,8 +165,9 @@ PENDING
 | `/羽忆 开启 主题` | 必须已为 1 | 必须已为 1 | 1 | 写 / 刷新 | 重建 | 保留 |
 | `/羽忆 关闭 自动` | 不变 | 0 | 不变 | 刷新（auto=false） | 不变 | 保留（消费时按授权丢弃） |
 | `/羽忆 关闭 主题` | 不变 | 不变 | 0 | 刷新（store=false） | 不变 | 保留（消费时按授权丢弃） |
-| `/羽忆 关闭` | 0 | 0 | 0 | 删除 | 删除 | 删除 |
-| `/羽忆 清空` | 不变 | 0 | 0 | 删除 | 删除 | 删除 |
+| `/羽忆 关闭` | 0 | 0 | 0 | 写墓碑（auto/store=false） | 删除 | 删除 |
+| `/羽忆 清空` | 不变 | 不变 | 不变 | 保持不变 | 删除 | 删除 |
+| 首次事件自动登记 | 1 | 1 | 1 | 写（auto/store=true） | 重建 | 消费该事件 |
 | 全局 `memory.enabled=false` | 不变 | 不变 | 不变 | 保留 | 保留但租约失效后不读 | 保留但租约失效后不写 |
 
 ## 8. 清扫
@@ -171,14 +179,14 @@ PENDING
 - 清扫不受全局 `memory.enabled` 限制：关闭时仍清理过期共享文件与超窗占卜记录。
 - auth / context / lease 的清扫在各自锁内重新读取并判断过期后再删；事件按 mtime 清扫。
 - 星羽核心只清扫事件，不再删除 auth / context / lease；这三类由羽忆负责。
-- `disable` / `clear` 的 auth、context、事件清理各自独立失败；命令如实回报未完成项，关闭用户的共享文件由每小时维护重试。
+- `disable` / `clear` 的 context、事件、导出清理各自独立失败；命令如实回报未完成项，关闭用户的共享文件由每小时维护重试。`disable` 额外写授权墓碑，失败也计入未完成项；`clear` 不改授权。
 - `context/*.lock`、`state.lock`、`lease.lock` 是持久协调文件，不含记忆正文；清扫只处理 `.json`，锁文件可随目录手动删除。
 
 ## 9. 数据保留
 
 - 占卜事件：每用户最近 **200 条 / 180 天**；主题次数只统计这个窗口。
 - 显式记忆：默认不过期；单条 ≤ 160 字。
-- 清空不删 `users` 行：保留 `enabled` 与 `cleared_at` 等状态，用于挡住清空前的旧事件并支持后续重开。
+- 清空不删 `users` 行，也不改变 `enabled` / `auto_history` / `store_topic`：只写 `cleared_at` 并删除数据，之后仍会继续记录；要停止请用 `/羽忆 关闭`。
 - 停用写 `disabled_at`；重新启用不清除，停用前产生的事件不会在重开后复活。
 - 启动与每小时维护会记录只读统计（用户 / 记忆 / 占卜 / 事件 / auth / context 数量），不设上限、不改变行为。
 - `suppressed_topics`：v1 表已建，命令留待 v2。

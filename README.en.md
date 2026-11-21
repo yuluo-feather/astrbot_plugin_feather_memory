@@ -43,7 +43,8 @@ Feather Memory does not touch the framework KV store and does not import Star Fe
 - 📤 **Export**: `/羽忆 导出` writes your saved memories, recent-topic stats and switch states to a JSON file; your data only, with no account identifiers or raw questions
 - 🎯 **Fixed topics**: private normal readings contribute only a fixed enum — work / study / relationship / family / finance / health / social / travel. A question that hits several topics, or none, yields an empty topic; no semantic guessing
 - 🚫 **No raw questions**: events carry the spread, cards and topic enum, plus an event id, platform / user identifiers, timestamp and core version for dedupe and indexing — **never the words you asked**. Group chats and the daily fortune do not feed it
-- 🔁 **Revocable**: `/羽忆 关闭` immediately deletes auth, context and pending events; saved memories remain until `/羽忆 清空`
+- ✨ **Auto enrollment**: once the master switch is on, a new user's first eligible private reading starts recording automatically; set `memory.auto_enroll` to `false` to go back to per-user `/羽忆 开启`
+- 🔁 **Revocable**: `/羽忆 关闭` stops collection immediately, deletes context and pending events, and rewrites auth as a non-deliverable tombstone; saved memories remain until `/羽忆 清空` deletes the data
 - 🧩 **Plug and play**: if Feather Memory is absent, the lease is stale or the shared directory is missing, Star Feather simply behaves as if there were no memory
 - 🗂️ **Two sources merged**: at most 5 items, with explicit entries taking slots first and recent topics filling the rest; merged into one context block of at most 600 characters, valid for 30 days
 - 🔒 **Group isolation**: no personal memory is shown or saved in group chats; only `/羽忆 状态` and `/羽忆 关闭` (without arguments) are accepted there, and partial disables are private-chat only
@@ -60,13 +61,13 @@ Feather Memory does not touch the framework KV store and does not import Star Fe
 | ✍️ Remember | `/羽忆 记住 <text>` | Save a preference / background / goal (optional `偏好` / `背景` / `目标` prefix; enables the master switch) |
 | ✏️ Modify | `/羽忆 修改 <id> <new text>` | Modify one saved entry; keeps its id, optional prefix changes category, truncates at 160 chars |
 | 🗑️ Forget | `/羽忆 忘记 <id>` | Delete one saved entry (ids look like `#12` in the list) |
-| 🧹 Clear | `/羽忆 清空` | Clear **your own** Feather Memory data after a second confirmation, including exported copies under `exports/` (send `/羽忆 清空 确认` within 60 seconds) |
+| 🧹 Clear | `/羽忆 清空` | After a second confirmation, delete **your own** existing data, including exported copies under `exports/`; recording continues afterwards, use `/羽忆 关闭` to stop |
 | 🔛 Enable | `/羽忆 开启` | Turn on the master switch, auto history and topic recording in one step (one auth write) |
 | 🤖 Auto history | `/羽忆 开启 自动` | Fine-grained: allow private normal readings to feed recent topics (idempotent) |
 | 🏷️ Topic recording | `/羽忆 开启 主题` | Fine-grained: allow events to carry the fixed topic enum (idempotent, requires auto history first) |
 | 🔕 Disable auto | `/羽忆 关闭 自动` | Turn off auto history only; topic recording and stored data stay |
 | 🔕 Disable topics | `/羽忆 关闭 主题` | Turn off topic recording only; auto history and stored data stay |
-| 🔒 Disable | `/羽忆 关闭` | Full stop: delete auth, memory context and pending events; saved memories remain |
+| 🔒 Disable | `/羽忆 关闭` | Full stop: stop collecting, delete memory context and pending events, rewrite auth as non-deliverable; saved memories remain |
 | 📊 Status | `/羽忆 状态` | Show the global switch, lease remaining, auth, context validity and generation time, last consumption and pending events |
 
 ### Example
@@ -95,7 +96,7 @@ Star Feather checks: lease valid + authorised + not daily + not a group + delive
    ▼
 Feather Memory consumes every 5 seconds
    ├─ dedupe: event_id already stored → delete the file, do not count again
-   ├─ validate: user record / master switch / auth / auto history / cleared-at
+   ├─ validate: user record / master switch / auth / auto history / cleared-at (enroll new users when auto_enroll is on)
    ├─ store: readings
    └─ mark dirty → rebuild context (revision +1)
    ▼
@@ -118,6 +119,7 @@ Feather Memory's settings live in the AstrBot plugin settings:
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `memory.enabled` | bool | `false` | Master switch. When enabled, Feather Memory refreshes its lease and consumes the private-reading events Star Feather writes; when disabled it writes no lease, consumes nothing and injects nothing, while user data stays inert. Reload the plugin after changing it. |
+| `memory.auto_enroll` | bool | `true` | Auto enrollment. When on, a new user's first eligible private reading starts recording automatically; when off, users must run `/羽忆 开启` themselves. Reload the plugin after changing it. |
 | `context.min_topic_count` | int | `1` | Minimum occurrences for a recent topic to enter the context. `1` keeps every recent topic; `2` keeps only topics seen more than once. It only affects the context and never deletes stored stats. |
 
 To make the whole chain work, two switches on the Star Feather side must also be on (in Star Feather's plugin settings):
@@ -218,7 +220,8 @@ python -m pytest
 - **Feather Memory needs Star Feather**: installing it alone produces no memory; it only consumes events Star Feather writes and only hands context back to Star Feather.
 - **Memory is reference, not instruction**: it is sanitised, length-limited and labelled as reference material when injected; if the model restates it inaccurately, trust the cards and your own judgement.
 - **Do not save credentials**: never store passwords, tokens or ID numbers through `/羽忆 记住`.
-- **Uninstalling is not deleting**: disabling or uninstalling Feather Memory stops it from consuming and injecting, but saved memories remain in `plugin_data`; use `/羽忆 清空`, or remove the data during uninstall, to delete them.
+- **Clear deletes only your existing data** and leaves the switches unchanged: recording continues afterwards; send `/羽忆 关闭` to stop. The `users` row keeps `enabled` / `cleared_at` so events from before the clear cannot come back.
+- **Uninstalling is not deleting**: disabling or uninstalling Feather Memory stops it from consuming and injecting, but saved memories remain in `plugin_data`; `/羽忆 清空` removes the data, or remove it during uninstall.
 - **Multiple instances**: only one Feather Memory instance should maintain the lease for a given shared directory; if several write it at once, the last writer wins.
 
 ---

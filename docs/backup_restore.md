@@ -43,6 +43,7 @@ data/plugin_data/_shared/feather_memory/v1/
 
 ## 5. 彻底清除
 
-- `/羽忆 清空`：删除该用户的记忆、占卜记录、授权与 context，写 `cleared_at`。
+- `/羽忆 清空`：删除该用户的记忆、占卜记录、context 与导出副本，写 `cleared_at`；**不改变开关与授权**，之后仍会继续记录。
+- `/羽忆 关闭`：停止记录，删除 context 与待处理事件，把授权改写为墓碑（`auto_history=false`、`store_topic=false`），不删除授权文件。
 - 卸载并删除数据：框架只删 `plugin_data/feather_memory/`，**不会删** `_shared/feather_memory/v1/`；如需彻底清除，手动删除共享目录，或等待 TTL 清扫。
 - 共享目录里可能残留 `context/*.lock`、`auth/*.lock`、`state.lock` 与 `lease.lock` 锁文件；它们不含记忆正文，清扫只处理 `.json`，可随目录一起删除。

@@ -31,6 +31,7 @@ __all__ = [
     "PLUGIN_NAME",
     "PLUGIN_DESC",
     "TICK_SECONDS",
+    "auto_enroll",
     "build_service",
     "command_argument",
     "is_private_chat",
@@ -77,6 +78,17 @@ def min_topic_count(config: AstrBotConfig | None) -> int:
     except (AttributeError, TypeError, ValueError):
         return 1
     return 2 if value >= 2 else 1
+
+
+def auto_enroll(config: AstrBotConfig | None) -> bool:
+    """新用户首次事件自动登记；缺省为 True（默认登记）。"""
+    try:
+        section = (config or {}).get("memory") or {}
+    except AttributeError:
+        return True
+    if not isinstance(section, dict):
+        return True
+    return bool(section.get("auto_enroll", True))
 
 
 def platform_id_from_event(event: AstrMessageEvent) -> str:
@@ -142,4 +154,5 @@ def build_service(config: AstrBotConfig | None) -> MemoryService:
         clock=now_utc,
         log=_HostLog(),
         min_topic_count=min_topic_count(config),
+        auto_enroll=auto_enroll(config),
     )

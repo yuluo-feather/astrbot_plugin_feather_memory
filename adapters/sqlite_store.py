@@ -149,6 +149,18 @@ class SqliteStore:
             raise RuntimeError("user row vanished after insert")
         return user
 
+    def enroll_user(self, user_key: str, now: datetime) -> bool:
+        """首次事件登记：仅当用户行不存在时创建并三开；返回是否真的新建。"""
+        stamp = format_ts(now)
+        with self._connect(immediate=True) as conn:
+            cursor = conn.execute(
+                "INSERT OR IGNORE INTO users(user_key, enabled, auto_history, store_topic,"
+                " created_at, updated_at) VALUES(?,1,1,1,?,?)",
+                (user_key, stamp, stamp),
+            )
+            created = cursor.rowcount > 0
+        return created
+
     def get_user(self, user_key: str) -> dict | None:
         with self._connect() as conn:
             row = conn.execute(
@@ -555,7 +567,7 @@ class SqliteStore:
             conn.execute("DELETE FROM readings WHERE user_key = ?", (user_key,))
             conn.execute("DELETE FROM suppressed_topics WHERE user_key = ?", (user_key,))
             conn.execute(
-                "UPDATE users SET auto_history = 0, store_topic = 0, cleared_at = ?,"
+                "UPDATE users SET cleared_at = ?,"
                 " context_revision = context_revision + 1, context_dirty = 1,"
                 " updated_at = ? WHERE user_key = ?",
                 (cleared, stamp, user_key),

@@ -115,6 +115,7 @@ class Lease:
     refreshed_at: str
     expires_at: str
     source: str
+    auto_enroll: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -124,6 +125,7 @@ class Lease:
             "refreshed_at": self.refreshed_at,
             "expires_at": self.expires_at,
             "source": self.source,
+            "auto_enroll": self.auto_enroll,
         }
 
     def is_valid(self, now) -> bool:
@@ -135,12 +137,16 @@ class Lease:
     @classmethod
     def parse(cls, payload: object) -> "Lease":
         data = _schema_of(payload, SCHEMA_LEASE)
+        auto_enroll = data.get("auto_enroll", False)
+        if not isinstance(auto_enroll, bool):
+            raise ContractError(f"{SCHEMA_LEASE}: field 'auto_enroll' must be a boolean")
         return cls(
             instance_id=_str(data, "instance_id", SCHEMA_LEASE),
             started_at=_ts(data, "started_at", SCHEMA_LEASE),
             refreshed_at=_ts(data, "refreshed_at", SCHEMA_LEASE),
             expires_at=_ts(data, "expires_at", SCHEMA_LEASE),
             source=_str(data, "source", SCHEMA_LEASE),
+            auto_enroll=auto_enroll,
         )
 
 

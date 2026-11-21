@@ -103,6 +103,12 @@ def test_lease_file_path_and_fields(feed, clock):
     assert feed.read_lease() == _lease(clock)
 
 
+def test_lease_without_auto_enroll_parses_false():
+    payload = _golden("lease.json")
+    payload.pop("auto_enroll", None)
+    assert Lease.parse(payload).auto_enroll is False
+
+
 def test_auth_file_path_and_fields(feed, clock):
     feed.write_auth(_auth(clock))
     path = feed.layout.auth_dir / f"{DIGEST}.json"

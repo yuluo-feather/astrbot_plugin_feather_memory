@@ -99,7 +99,7 @@ def test_clear_during_context_write_wins(service, feed, enabled_user, monkeypatc
                              lambda: service.clear(user))
     assert _context(service, feed, user) is None
     assert service.user_state(user)["enabled"] == 1
-    assert service.user_state(user)["auto_history"] == 0
+    assert service.user_state(user)["auto_history"] == 1
 
 
 def test_disable_during_context_write_wins(service, feed, enabled_user, monkeypatch):

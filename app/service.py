@@ -89,12 +89,14 @@ class MemoryService:
                  clock: Callable[[], datetime] = now_utc,
                  log: logging.Logger | None = None,
                  instance_id: str | None = None,
-                 min_topic_count: int = 1):
+                 min_topic_count: int = 1,
+                 auto_enroll: bool = True):
         self.store = store
         self.feed = feed
         self.global_enabled = global_enabled
         self.version = version
         self.min_topic_count = 2 if int(min_topic_count) >= 2 else 1
+        self.auto_enroll = bool(auto_enroll)
         self.clock = clock
         self.log = log or logging.getLogger("feather_memory")
         self.instance_id = instance_id or new_ulid(clock())
@@ -133,9 +135,9 @@ class MemoryService:
         now = self.clock()
         if self.global_enabled:
             self._refresh_lease(now)
+            self.refresh_auth_all(now)
             self.consume_pending(now)
             self.rebuild_all_contexts(now)
-            self.refresh_auth_all(now)
         self.cleanup(now)
         self._state = "started"
         self.log.info(
@@ -181,6 +183,7 @@ class MemoryService:
             refreshed_at=format_ts(now),
             expires_at=format_ts(add_seconds(now, LEASE_TTL_SECONDS)),
             source=self.source,
+            auto_enroll=self.auto_enroll,
         )
         with self._lifecycle_lock:
             # 关闭与刷新互斥：已经进入线程池的 tick 不得在 shutdown 删租约后写回。
@@ -257,9 +260,19 @@ class MemoryService:
             return None
         user = self.store.get_user(event.user_key)
         if user is None:
-            self.log.info("丢弃事件 %s：用户无记录", event.event_id)
-            return None
+            if not self.auto_enroll:
+                self.log.info("丢弃事件 %s：用户无记录且未启用自动登记", event.event_id)
+                return None
+            enrolled = self.store.enroll_user(event.user_key, now)
+            user = self.store.get_user(event.user_key)
+            if user is None:
+                self.log.info("丢弃事件 %s：用户无记录", event.event_id)
+                return None
+            if enrolled:
+                self._try_refresh_auth(event.user_key, now)
+                self.log.info("首次事件登记：user=%s", self._tag(event.user_key))
         if not user["enabled"]:
+            self._try_refresh_auth(event.user_key, now)
             self.log.info("丢弃事件 %s：用户总开关关闭", event.event_id)
             return None
         if not user["auto_history"]:
@@ -267,6 +280,10 @@ class MemoryService:
             return None
         digest = user_key_hash(event.user_key)
         auth = self.feed.read_auth(digest)
+        if auth is None:
+            # 授权文件可再生成；启动对账之外的单次丢失在这里补一次。
+            self._try_refresh_auth(event.user_key, now)
+            auth = self.feed.read_auth(digest)
         if auth is None:
             self.log.info("丢弃事件 %s：授权缺失或损坏", event.event_id)
             return None
@@ -415,21 +432,27 @@ class MemoryService:
         with self._state_transition():
             return self._refresh_auth_impl(user_key, now or self.clock())
 
+    def _try_refresh_auth(self, user_key: str, now: datetime) -> bool:
+        try:
+            return self.refresh_auth(user_key, now)
+        except LockTimeout:
+            self.log.warning("授权刷新跳过：状态锁超时 user=%s", self._tag(user_key))
+            return False
+
     def _refresh_auth_impl(self, user_key: str, now: datetime) -> bool:
-        # 调用方必须已持有状态转换锁。
+        # 调用方必须已持有状态转换锁。停用用户写「墓碑」而不是删除授权文件：
+        # 文件存在但两个开关都为 false，星羽据此不投递，也不会触发首次提示。
         digest = user_key_hash(user_key)
         user = self.store.get_user(user_key)
         if user is None:
             return False
-        if not user["enabled"]:
-            self.feed.delete_auth(digest)
-            return False
+        enabled = bool(user["enabled"])
         auth = Auth(
             user_key_hash=digest,
             generated_at=format_ts(now),
             expires_at=format_ts(add_days(now, AUTH_TTL_DAYS)),
-            auto_history=bool(user["auto_history"]),
-            store_topic=bool(user["store_topic"]),
+            auto_history=bool(user["auto_history"]) if enabled else False,
+            store_topic=bool(user["store_topic"]) if enabled else False,
             source=self.source,
         )
         try:
@@ -441,8 +464,8 @@ class MemoryService:
 
     def refresh_auth_all(self, now: datetime | None = None) -> None:
         now = now or self.clock()
-        for user in self.store.all_users(enabled_only=True):
-            self.refresh_auth(user["user_key"], now)
+        for user in self.store.all_users():
+            self._try_refresh_auth(user["user_key"], now)
         self._last_auth_refresh = now
 
     # ---- cleanup -------------------------------------------------------
@@ -461,13 +484,12 @@ class MemoryService:
             except Exception as exc:
                 self.log.warning("清理占卜记录失败：%s", exc)
             if not user["enabled"]:
-                # 关闭时的共享文件清理若失败，由每小时维护重试。
-                try:
-                    if not self.feed.delete_auth(user_key_hash(user["user_key"])):
-                        self.log.warning("重试删除授权失败：user=%s",
+                # 停用用户只补墓碑，不删授权；缺文件时由每小时维护补写。
+                digest = user_key_hash(user["user_key"])
+                if self.feed.read_auth(digest) is None:
+                    if not self._try_refresh_auth(user["user_key"], now):
+                        self.log.warning("补写授权墓碑失败：user=%s",
                                          self._tag(user["user_key"]))
-                except OSError as exc:
-                    self.log.warning("重试删除授权失败：%s", exc)
                 try:
                     self.feed.remove_events_for_user(user["user_key"])
                 except OSError as exc:
@@ -562,22 +584,10 @@ class MemoryService:
             self.log.info("开关：topic(%s)=0", self._tag(user_key))
             return "ok" if auth_ok else "auth_failed"
 
-    def _cleanup_user_files(self, user_key: str,
-                            now: datetime) -> tuple[int, list[str]]:
-        """删除 auth / context / 事件；每步独立失败，返回未完成项。"""
+    def _cleanup_context_and_events(self, user_key: str,
+                                    now: datetime) -> tuple[int, list[str]]:
+        """删除 context 与待处理事件；授权由调用方决定写墓碑或保持原状。"""
         failures: list[str] = []
-        digest = user_key_hash(user_key)
-        auth_ok = False
-        for _ in range(2):
-            try:
-                if self.feed.delete_auth(digest):
-                    auth_ok = True
-                    break
-            except OSError as exc:
-                self.log.warning("删除授权失败：%s", exc)
-        if not auth_ok:
-            failures.append("auth")
-
         context_ok = False
         for _ in range(2):
             if self._drop_context(user_key, now):
@@ -640,7 +650,9 @@ class MemoryService:
             now = self.clock()
             self.store.ensure_user(user_key, now)
             self.store.disable_user(user_key, now)
-            removed, failures = self._cleanup_user_files(user_key, now)
+            removed, failures = self._cleanup_context_and_events(user_key, now)
+            if not self._refresh_auth_impl(user_key, now):
+                failures.append("auth")
             self.log.info("开关：disable(%s)，清理事件 %d 条",
                           self._tag(user_key), removed)
             return removed, failures
@@ -650,7 +662,7 @@ class MemoryService:
             now = self.clock()
             self.store.ensure_user(user_key, now)
             self.store.clear_user_data(user_key, now)
-            removed, failures = self._cleanup_user_files(user_key, now)
+            removed, failures = self._cleanup_context_and_events(user_key, now)
             self._cleanup_exports(user_key, failures)
             self._clear_pending.pop(user_key, None)
             self.log.info("开关：clear(%s)，清理事件 %d 条",

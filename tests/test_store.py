@@ -240,8 +240,9 @@ def test_clear_user_data_removes_all_and_sets_cleared_at(store, clock, make_even
     row = store.get_user(user)
     assert _count(store, "memories") == 0
     assert _count(store, "readings") == 0
-    assert row["auto_history"] == 0
-    assert row["store_topic"] == 0
+    assert row["enabled"] == 1
+    assert row["auto_history"] == 1
+    assert row["store_topic"] == 1
     assert row["cleared_at"] == format_ts_precise(clock.now())
     assert row["context_revision"] == before + 1
     assert row["context_dirty"] == 1
