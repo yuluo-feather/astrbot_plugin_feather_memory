@@ -20,6 +20,7 @@ def _count(store, table: str) -> int:
 def test_initialize_sets_user_version_and_is_idempotent(store):
     with sqlite3.connect(store.path) as conn:
         assert conn.execute("PRAGMA user_version").fetchone()[0] == 2
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
     store.initialize()
 
 

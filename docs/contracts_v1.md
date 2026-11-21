@@ -36,6 +36,7 @@ data/plugin_data/_shared/feather_memory/v1/
 | `source` | string | `feather_memory/{version}` |
 
 - 羽忆启用时写，运行期每 60 秒刷新；优雅关闭时仅删除 `instance_id` 相同的租约。
+- 租约写入与删除都在 `lease.lock` 内完成；删除前在锁内复查 `instance_id`，避免误删新实例的租约。
 - 核心在写事件、读 context 前都先读租约；缺失 / 过期 / schema 不符 → 按无羽忆处理。
 - 租约是**服务存活**，不是用户记忆过期；授权 TTL 另算。
 
@@ -122,6 +123,7 @@ PENDING
 | 不存在 | 正常无记忆 |
 | JSON 损坏 / schema 不符 | 忽略，warning 一次 |
 | 已过期 | 忽略 |
+| `generated_at >= expires_at`，或 `generated_at` 明显晚于当前（>5 分钟） | 忽略 |
 | 超过 8 KB / `text` 超 600 字 / items 超 5 条 | 忽略 |
 | 短暂读取失败 | 本次无记忆，下次重试 |
 | 权限错误 | warning 一次，不刷屏 |
@@ -165,7 +167,7 @@ PENDING
 - 租约：`expires_at` 超过 1 天则删除。
 - 启动时一次；之后每小时一次；失败只 warning，不影响占卜。
 - 清扫不受全局 `memory.enabled` 限制：关闭时仍清理过期共享文件与超窗占卜记录。
-- `context/*.lock` 与 `state.lock` 是持久协调文件，不含记忆正文；清扫只处理 `.json`，锁文件可随目录手动删除。
+- `context/*.lock`、`state.lock`、`lease.lock` 是持久协调文件，不含记忆正文；清扫只处理 `.json`，锁文件可随目录手动删除。
 
 ## 9. 数据保留
 
@@ -173,4 +175,5 @@ PENDING
 - 显式记忆：默认不过期；单条 ≤ 160 字。
 - 清空不删 `users` 行：保留 `enabled` 与 `cleared_at` 等状态，用于挡住清空前的旧事件并支持后续重开。
 - 停用写 `disabled_at`；重新启用不清除，停用前产生的事件不会在重开后复活。
+- 启动与每小时维护会记录只读统计（用户 / 记忆 / 占卜 / 事件 / auth / context 数量），不设上限、不改变行为。
 - `suppressed_topics`：v1 表已建，命令留待 v2。

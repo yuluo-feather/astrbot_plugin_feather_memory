@@ -16,6 +16,7 @@ from data.plugins.astrbot_plugin_feather_memory.core.contracts import (
 
 FIXTURES = Path(__file__).parent / "fixtures" / "contracts"
 NOW = datetime(2026, 11, 21, 12, 0, 0, tzinfo=timezone.utc)
+CONTEXT_NOW = datetime(2026, 11, 21, 21, 0, 0, tzinfo=timezone.utc)
 
 
 def load(name: str) -> dict:
@@ -51,8 +52,16 @@ def test_context_golden_roundtrip() -> None:
     payload = load("context.json")
     context = MemoryContext.parse(payload)
     assert context.to_dict() == payload
-    assert context.is_usable(NOW)
+    assert context.is_usable(CONTEXT_NOW)
     assert not context.is_usable(datetime(2027, 1, 1, tzinfo=timezone.utc))
+
+
+def test_context_rejects_future_generated_or_inverted_times() -> None:
+    payload = load("context.json")
+    far_future = payload | {"generated_at": "2026-11-21T21:10:00Z"}
+    assert not MemoryContext.parse(far_future).is_usable(CONTEXT_NOW)
+    inverted = payload | {"generated_at": "2026-12-21T20:15:05Z"}
+    assert not MemoryContext.parse(inverted).is_usable(CONTEXT_NOW)
 
 
 def test_unknown_fields_are_ignored() -> None:

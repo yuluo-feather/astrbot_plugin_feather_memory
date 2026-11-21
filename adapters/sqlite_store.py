@@ -90,7 +90,6 @@ class SqliteStore:
         conn.row_factory = sqlite3.Row
         try:
             conn.execute("PRAGMA busy_timeout = 5000")
-            conn.execute("PRAGMA journal_mode = WAL")
             conn.execute("PRAGMA synchronous = NORMAL")
             if immediate:
                 conn.execute("BEGIN IMMEDIATE")
@@ -104,6 +103,7 @@ class SqliteStore:
 
     def initialize(self) -> None:
         with self._connect() as conn:
+            conn.execute("PRAGMA journal_mode = WAL")
             version = conn.execute("PRAGMA user_version").fetchone()[0]
             if version == 0:
                 conn.executescript(SCHEMA_V1)
@@ -290,6 +290,16 @@ class SqliteStore:
             row = conn.execute(
                 "SELECT COUNT(*) AS n FROM memories WHERE user_key = ?", (user_key,)
             ).fetchone()
+        return int(row["n"])
+
+    def count_memories_all(self) -> int:
+        with self._connect() as conn:
+            row = conn.execute("SELECT COUNT(*) AS n FROM memories").fetchone()
+        return int(row["n"])
+
+    def count_readings_all(self) -> int:
+        with self._connect() as conn:
+            row = conn.execute("SELECT COUNT(*) AS n FROM readings").fetchone()
         return int(row["n"])
 
     # ---- readings ------------------------------------------------------

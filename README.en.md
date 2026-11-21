@@ -164,7 +164,7 @@ Restart AstrBot and the plugin loads automatically.
 - Event files also contain `event_id`, `user_key`, `platform_id`, `created_at` and `source_version` for dedupe, indexing and diagnostics; the original question is not included.
 - Topics use a fixed enum (work / study / relationship / family / finance / health / social / travel); a question hitting several topics, or none, yields an empty topic.
 - Memory text is sanitised and length-limited at injection time and explicitly labelled as reference material, not system instructions; it never overrides the system prompt.
-- Shared files: events are kept for 7 days, auth for 180 days, context for 30 days; expired files are swept by both sides according to their TTLs. `context/*.lock` and `state.lock` are persistent coordination artifacts with no memory body; cleanup only handles `.json`.
+- Shared files: events are kept for 7 days, auth for 180 days, context for 30 days; expired files are swept by both sides according to their TTLs. `context/*.lock`, `state.lock` and `lease.lock` are persistent coordination artifacts with no memory body; cleanup only handles `.json`.
 - Clear removes **your own** data; the `users` row keeps `enabled` and `cleared_at` so events from before the clear cannot be consumed again.
 - Uninstalling Feather Memory deletes its lease; the shared directory is not removed automatically and leftover files are left to TTL cleanup.
 

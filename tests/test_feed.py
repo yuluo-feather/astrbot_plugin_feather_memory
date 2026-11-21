@@ -67,6 +67,27 @@ def test_lease_roundtrip_and_owner_check(feed, clock):
     assert feed.read_lease() is None
 
 
+def test_delete_lease_rechecks_instance_under_lock(feed, clock):
+    feed.write_lease(_lease(clock, "A"))
+    done = threading.Event()
+    result = {"value": None}
+
+    with FileLock(feed.layout.lease_lock_path, timeout_ms=1000):
+        feed._write_json(feed.layout.lease_path,
+                         _lease(clock, "B").to_dict(), 4 * 1024)
+
+        def remover():
+            result["value"] = feed.delete_lease("A")
+            done.set()
+
+        thread = threading.Thread(target=remover)
+        thread.start()
+        assert not done.wait(0.2)
+    thread.join(5)
+    assert result["value"] is False
+    assert feed.read_lease().instance_id == "B"
+
+
 def test_atomic_write_leaves_no_temp_files(feed, clock):
     feed.write_lease(_lease(clock))
     leftovers = list(feed.layout.root.rglob("*.tmp-*"))

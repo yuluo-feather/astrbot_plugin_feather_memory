@@ -424,6 +424,18 @@ def test_disabled_at_blocks_old_events_after_reenable(
     assert [(item.topic_key, item.count) for item in stats] == [("工作", 1)]
 
 
+def test_stats_is_read_only_counts(service, feed, make_event, enabled_user):
+    service.remember(enabled_user, "喜欢温柔")
+    feed.write_event(make_event("01JSTAT", enabled_user))
+    stats = service.stats()
+    assert stats["users"] == 1
+    assert stats["enabled"] == 1
+    assert stats["memories"] == 1
+    assert stats["readings"] == 0
+    assert stats["files_events"] == 1
+    assert stats["files_lease"] is True
+
+
 def test_status_counts_pending_events(service, feed, make_event, enabled_user):
     feed.write_event(make_event("01J1", enabled_user))
     info = service.status(enabled_user)

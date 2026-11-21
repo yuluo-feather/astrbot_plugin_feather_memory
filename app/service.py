@@ -12,6 +12,7 @@ from dataclasses import replace
 from datetime import datetime
 from typing import Callable
 
+from ..adapters.file_lock import LockTimeout
 from ..adapters.memory_feed import (
     WRITE_ERROR,
     WRITE_TIMEOUT,
@@ -132,7 +133,7 @@ class MemoryService:
             self._state = "stopped"
             try:
                 self.feed.delete_lease(self.instance_id)
-            except OSError as exc:
+            except (OSError, LockTimeout) as exc:
                 self.log.warning("租约删除失败：%s", exc)
 
     def tick(self) -> None:
@@ -168,7 +169,7 @@ class MemoryService:
                 return
             try:
                 self.feed.write_lease(lease)
-            except (OSError, ContractError) as exc:
+            except (OSError, ContractError, LockTimeout) as exc:
                 self.log.warning("羽忆租约写入失败：%s", exc)
                 return
         self._last_lease = now
@@ -443,6 +444,19 @@ class MemoryService:
             for user in self.store.dirty_users():
                 self.rebuild_context(user["user_key"], now)
         self._last_cleanup = now
+        self.log.info("统计：%s", self.stats())
+
+    def stats(self) -> dict:
+        """只读统计，不设上限、不影响行为。"""
+        users = self.store.all_users()
+        return {
+            "users": len(users),
+            "enabled": sum(1 for user in users if user["enabled"]),
+            "dirty": len(self.store.dirty_users()),
+            "memories": self.store.count_memories_all(),
+            "readings": self.store.count_readings_all(),
+            **{f"files_{key}": value for key, value in self.feed.counts().items()},
+        }
 
     # ---- state transitions --------------------------------------------
 

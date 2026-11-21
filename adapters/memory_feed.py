@@ -60,6 +60,10 @@ class FeedLayout:
         return self.root / "state.lock"
 
     @property
+    def lease_lock_path(self) -> Path:
+        return self.root / "lease.lock"
+
+    @property
     def auth_dir(self) -> Path:
         return self.root / "auth"
 
@@ -86,12 +90,12 @@ class MemoryFeed:
     @staticmethod
     def _read_json(path: Path, max_bytes: int) -> dict:
         try:
-            size = path.stat().st_size
+            with open(path, "rb") as handle:
+                raw = handle.read(max_bytes + 1)
         except FileNotFoundError:
             raise
-        if size > max_bytes:
-            raise ContractError(f"{path.name}: size {size} exceeds {max_bytes} bytes")
-        raw = path.read_bytes()
+        if len(raw) > max_bytes:
+            raise ContractError(f"{path.name}: size exceeds {max_bytes} bytes")
         if not raw:
             raise ContractError(f"{path.name}: empty file")
         try:
@@ -131,17 +135,19 @@ class MemoryFeed:
             return None
 
     def write_lease(self, lease: Lease) -> None:
-        self._write_json(self.layout.lease_path, lease.to_dict(), LEASE_MAX_BYTES)
+        with FileLock(self.layout.lease_lock_path, timeout_ms=1000):
+            self._write_json(self.layout.lease_path, lease.to_dict(), LEASE_MAX_BYTES)
 
     def delete_lease(self, instance_id: str) -> bool:
-        lease = self.read_lease()
-        if lease is None or lease.instance_id != instance_id:
-            return False
-        try:
-            self.layout.lease_path.unlink()
-        except FileNotFoundError:
-            return False
-        return True
+        with FileLock(self.layout.lease_lock_path, timeout_ms=1000):
+            lease = self.read_lease()
+            if lease is None or lease.instance_id != instance_id:
+                return False
+            try:
+                self.layout.lease_path.unlink()
+            except FileNotFoundError:
+                return False
+            return True
 
     # ---- auth ----------------------------------------------------------
 
@@ -207,6 +213,15 @@ class MemoryFeed:
             if event.user_key == user_key:
                 count += 1
         return count
+
+    def counts(self) -> dict:
+        """只读统计，不做任何限制。"""
+        return {
+            "events": len(self.iter_events()),
+            "auth": len(list(self.layout.auth_dir.glob("*.json"))),
+            "context": len(list(self.layout.context_dir.glob("*.json"))),
+            "lease": self.layout.lease_path.exists(),
+        }
 
     # ---- context -------------------------------------------------------
 

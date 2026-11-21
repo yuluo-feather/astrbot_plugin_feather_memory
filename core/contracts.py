@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import timedelta
 
 from .identity import escape_identity_part
 from .timeutil import parse_ts
@@ -26,6 +27,7 @@ AUTH_MAX_BYTES = 4 * 1024
 CONTEXT_TEXT_MAX_CHARS = 600
 CONTEXT_ITEMS_MAX = 5
 CONTEXT_TTL_DAYS = 30
+CONTEXT_CLOCK_SKEW_SECONDS = 300
 AUTH_TTL_DAYS = 180
 LEASE_TTL_SECONDS = 300
 LEASE_REFRESH_SECONDS = 60
@@ -289,11 +291,16 @@ class MemoryContext:
 
     def is_usable(self, now) -> bool:
         try:
-            fresh = now < parse_ts(self.expires_at)
+            generated = parse_ts(self.generated_at)
+            expires = parse_ts(self.expires_at)
         except ValueError:
             return False
+        if generated >= expires:
+            return False
+        if generated > now + timedelta(seconds=CONTEXT_CLOCK_SKEW_SECONDS):
+            return False
         return (
-            fresh
+            now < expires
             and self.scope == "private"
             and bool(self.text.strip())
             and len(self.text) <= CONTEXT_TEXT_MAX_CHARS
