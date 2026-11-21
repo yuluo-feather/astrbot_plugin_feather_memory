@@ -9,6 +9,7 @@
 ```text
 data/plugin_data/_shared/feather_memory/v1/
 ├── lease.json                  # 羽忆写，核心读
+├── state.lock                  # 羽忆写/锁：跨进程状态转换串行化
 ├── auth/{sha256(user_key)}.json
 ├── events/{event_id}.json      # 核心写，羽忆读
 ├── context/{sha256(user_key)}.json
@@ -136,8 +137,10 @@ PENDING
 - 锁等待上限 200 ms；超时放弃写入并置 `context_dirty=1`。
 - 写入成功后，只有在 `users.context_revision` 仍等于本次快照时才清 `context_dirty`；
   空 context / 停用分支同样条件清。revision 已变则保持 dirty，等下一次重建。
-- 进程内状态转换（开启 / 关闭 / 清空 / 单项开关）用同一把可重入锁串行化；
-  锁序固定为 state lock → 文件锁，跨进程仍由文件锁负责。
+- 进程内状态转换（开启 / 关闭 / 清空 / 单项开关）用同一把可重入锁串行化，
+  并再取 `state.lock` 做跨进程互斥；锁序固定为 state.lock → context.lock。
+- 空 context / 停用分支删除 context 前也要在 context 锁内复查 revision 与启用状态；
+  guard 失败不删新文件；删成功但条件清 dirty 失败时补置 dirty=1。
 - 进程崩溃时操作系统自动释放锁，不依赖删锁文件。
 - `context_dirty=1` 的用户在启动与每小时维护时重建；成功后清 0。
 - 删除 / 清空 / 关闭时立即删除 context 文件，避免旧记忆继续注入。
@@ -162,7 +165,7 @@ PENDING
 - 租约：`expires_at` 超过 1 天则删除。
 - 启动时一次；之后每小时一次；失败只 warning，不影响占卜。
 - 清扫不受全局 `memory.enabled` 限制：关闭时仍清理过期共享文件与超窗占卜记录。
-- `context/*.lock` 是持久协调文件，不含记忆正文；清扫只处理 `.json`，锁文件可随目录手动删除。
+- `context/*.lock` 与 `state.lock` 是持久协调文件，不含记忆正文；清扫只处理 `.json`，锁文件可随目录手动删除。
 
 ## 9. 数据保留
 

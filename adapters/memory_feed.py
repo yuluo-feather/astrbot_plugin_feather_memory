@@ -56,6 +56,10 @@ class FeedLayout:
         return self.root / "lease.json"
 
     @property
+    def state_lock_path(self) -> Path:
+        return self.root / "state.lock"
+
+    @property
     def auth_dir(self) -> Path:
         return self.root / "auth"
 
@@ -234,6 +238,30 @@ class MemoryFeed:
                 return True
         except (LockTimeout, OSError):
             return False
+
+    def delete_context_if(self, user_key_hash: str,
+                          guard: Callable[[], bool],
+                          timeout_ms: int = 1000) -> str:
+        """锁内复查 guard 后再删；guard 失败返回 skipped，不碰文件。"""
+        path = self.context_path(user_key_hash)
+        lock_path = self.layout.context_dir / f"{user_key_hash}.lock"
+        try:
+            with FileLock(lock_path, timeout_ms=timeout_ms):
+                if not guard():
+                    return "skipped"
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    return "deleted"
+                except OSError:
+                    return "error"
+                return "deleted"
+        except (LockTimeout, OSError):
+            return "error"
+
+    def state_lock(self, timeout_ms: int = 2000) -> FileLock:
+        """跨进程状态转换锁；锁序固定 state.lock → context.lock。"""
+        return FileLock(self.layout.state_lock_path, timeout_ms=timeout_ms)
 
     def write_context(self, user_key_hash: str, context: MemoryContext,
                       timeout_ms: int = 200,

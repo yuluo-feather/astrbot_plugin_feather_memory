@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime
 from typing import Callable
@@ -81,6 +82,7 @@ class MemoryService:
         self._state = "new"
         self._lifecycle_lock = threading.Lock()
         self._state_lock = threading.RLock()
+        self._transition_hook: Callable[[], None] | None = None
         self._last_lease: datetime | None = None
         self._last_cleanup: datetime | None = None
         self._last_auth_refresh: datetime | None = None
@@ -94,6 +96,15 @@ class MemoryService:
     def _tag(user_key: str) -> str:
         """日志只留身份摘要前 8 位，不打完整 uid。"""
         return user_key_hash(user_key)[:8]
+
+    @contextmanager
+    def _state_transition(self):
+        """进程内 RLock + 跨进程 state.lock；锁序 state → context。"""
+        with self._state_lock:
+            with self.feed.state_lock():
+                if self._transition_hook is not None:
+                    self._transition_hook()
+                yield
 
     # ---- lifecycle -----------------------------------------------------
 
@@ -278,17 +289,36 @@ class MemoryService:
         self.log.warning("context 删除失败（已置 dirty）：user=%s", user_key)
         return False
 
+    def _drop_context_guarded(self, user_key: str, now: datetime,
+                              guard: Callable[[], bool]) -> str:
+        """锁内复查 guard 后再删；guard 失败时不动新 context。"""
+        status = self.feed.delete_context_if(user_key_hash(user_key), guard)
+        if status in ("deleted", "skipped"):
+            return status
+        self.store.set_context_dirty(user_key, True, now)
+        self.log.warning("context 删除失败（已置 dirty）：user=%s", user_key)
+        return "error"
+
     def rebuild_context(self, user_key: str, now: datetime | None = None) -> str:
         now = now or self.clock()
         digest = user_key_hash(user_key)
         user = self.store.get_user(user_key)
         if user is None:
             return "missing"
+        snapshot = int(user["context_revision"])
         if not user["enabled"]:
-            if self._drop_context(user_key, now):
+            def still_disabled() -> bool:
+                fresh = self.store.get_user(user_key)
+                return bool(fresh and not fresh["enabled"]
+                            and int(fresh["context_revision"]) == snapshot)
+
+            status = self._drop_context_guarded(user_key, now, still_disabled)
+            if status == "skipped":
+                return "superseded"
+            if status == "deleted":
                 if not self.store.clear_dirty_if_revision(
-                        user_key, int(user["context_revision"]), now,
-                        require_enabled=False):
+                        user_key, snapshot, now, require_enabled=False):
+                    self.store.set_context_dirty(user_key, True, now)
                     return "superseded"
             return "disabled"
 
@@ -299,9 +329,17 @@ class MemoryService:
         items, text = compose_context(explicit, stats)
 
         if not items:
-            if self._drop_context(user_key, now):
-                if not self.store.clear_dirty_if_revision(
-                        user_key, int(user["context_revision"]), now):
+            def still_empty() -> bool:
+                fresh = self.store.get_user(user_key)
+                return bool(fresh and fresh["enabled"]
+                            and int(fresh["context_revision"]) == snapshot)
+
+            status = self._drop_context_guarded(user_key, now, still_empty)
+            if status == "skipped":
+                return "superseded"
+            if status == "deleted":
+                if not self.store.clear_dirty_if_revision(user_key, snapshot, now):
+                    self.store.set_context_dirty(user_key, True, now)
                     return "superseded"
             return "empty"
 
@@ -353,30 +391,32 @@ class MemoryService:
     # ---- auth ----------------------------------------------------------
 
     def refresh_auth(self, user_key: str, now: datetime | None = None) -> bool:
-        now = now or self.clock()
+        with self._state_transition():
+            return self._refresh_auth_impl(user_key, now or self.clock())
+
+    def _refresh_auth_impl(self, user_key: str, now: datetime) -> bool:
+        # 调用方必须已持有状态转换锁。
         digest = user_key_hash(user_key)
-        with self._state_lock:
-            # 关闭 / 清空与授权刷新互斥：刷新前在锁内重读用户状态。
-            user = self.store.get_user(user_key)
-            if user is None:
-                return False
-            if not user["enabled"]:
-                self.feed.delete_auth(digest)
-                return False
-            auth = Auth(
-                user_key_hash=digest,
-                generated_at=format_ts(now),
-                expires_at=format_ts(add_days(now, AUTH_TTL_DAYS)),
-                auto_history=bool(user["auto_history"]),
-                store_topic=bool(user["store_topic"]),
-                source=self.source,
-            )
-            try:
-                self.feed.write_auth(auth)
-            except (OSError, ContractError) as exc:
-                self.log.warning("授权文件写入失败：%s", exc)
-                return False
-            return True
+        user = self.store.get_user(user_key)
+        if user is None:
+            return False
+        if not user["enabled"]:
+            self.feed.delete_auth(digest)
+            return False
+        auth = Auth(
+            user_key_hash=digest,
+            generated_at=format_ts(now),
+            expires_at=format_ts(add_days(now, AUTH_TTL_DAYS)),
+            auto_history=bool(user["auto_history"]),
+            store_topic=bool(user["store_topic"]),
+            source=self.source,
+        )
+        try:
+            self.feed.write_auth(auth)
+        except (OSError, ContractError) as exc:
+            self.log.warning("授权文件写入失败：%s", exc)
+            return False
+        return True
 
     def refresh_auth_all(self, now: datetime | None = None) -> None:
         now = now or self.clock()
@@ -411,12 +451,12 @@ class MemoryService:
 
     def enable(self, user_key: str) -> dict:
         """一键开启：总开关 + 自动历史 + 主题记录，只写一次授权。"""
-        now = self.clock()
-        with self._state_lock:
+        with self._state_transition():
+            now = self.clock()
             user = self.store.ensure_user(user_key, now)
             self.store.set_user_flags(
                 user_key, now, enabled=1, auto_history=1, store_topic=1)
-            auth_ok = self.refresh_auth(user_key, now)
+            auth_ok = self._refresh_auth_impl(user_key, now)
             self.rebuild_context(user_key, now)
             self.log.info("开关：enable-all(%s)", self._tag(user_key))
             result = dict(self.store.get_user(user_key) or user)
@@ -424,25 +464,25 @@ class MemoryService:
             return result
 
     def enable_auto(self, user_key: str) -> str:
-        now = self.clock()
-        with self._state_lock:
+        with self._state_transition():
+            now = self.clock()
             code = self.store.set_flag_if_enabled(user_key, now, auto_history=1)
             if code != "ok":
                 return code
-            if not self.refresh_auth(user_key, now):
+            if not self._refresh_auth_impl(user_key, now):
                 return "auth_failed"
             self.rebuild_context(user_key, now)
             self.log.info("开关：auto(%s)=1", self._tag(user_key))
             return "ok"
 
     def enable_topic(self, user_key: str) -> str:
-        now = self.clock()
-        with self._state_lock:
+        with self._state_transition():
+            now = self.clock()
             code = self.store.set_flag_if_enabled(
                 user_key, now, store_topic=1, require_auto=True)
             if code != "ok":
                 return code
-            if not self.refresh_auth(user_key, now):
+            if not self._refresh_auth_impl(user_key, now):
                 return "auth_failed"
             self.rebuild_context(user_key, now)
             self.log.info("开关：topic(%s)=1", self._tag(user_key))
@@ -450,35 +490,35 @@ class MemoryService:
 
     def disable_auto(self, user_key: str) -> str:
         """只关自动历史；主题记录与已存数据不动。"""
-        now = self.clock()
-        with self._state_lock:
+        with self._state_transition():
+            now = self.clock()
             user = self.store.get_user(user_key)
             if user is None:
                 return "missing"
             self.store.set_user_flags(user_key, now, auto_history=0)
             auth_ok = True
             if user["enabled"]:
-                auth_ok = self.refresh_auth(user_key, now)
+                auth_ok = self._refresh_auth_impl(user_key, now)
             self.log.info("开关：auto(%s)=0", self._tag(user_key))
             return "ok" if auth_ok else "auth_failed"
 
     def disable_topic(self, user_key: str) -> str:
         """只关主题记录；自动历史与已存数据不动。"""
-        now = self.clock()
-        with self._state_lock:
+        with self._state_transition():
+            now = self.clock()
             user = self.store.get_user(user_key)
             if user is None:
                 return "missing"
             self.store.set_user_flags(user_key, now, store_topic=0)
             auth_ok = True
             if user["enabled"]:
-                auth_ok = self.refresh_auth(user_key, now)
+                auth_ok = self._refresh_auth_impl(user_key, now)
             self.log.info("开关：topic(%s)=0", self._tag(user_key))
             return "ok" if auth_ok else "auth_failed"
 
     def disable(self, user_key: str) -> int:
-        now = self.clock()
-        with self._state_lock:
+        with self._state_transition():
+            now = self.clock()
             self.store.ensure_user(user_key, now)
             self.store.disable_user(user_key, now)
             self.feed.delete_auth(user_key_hash(user_key))
@@ -489,8 +529,8 @@ class MemoryService:
             return removed
 
     def clear(self, user_key: str) -> int:
-        now = self.clock()
-        with self._state_lock:
+        with self._state_transition():
+            now = self.clock()
             self.store.ensure_user(user_key, now)
             self.store.clear_user_data(user_key, now)
             self.feed.delete_auth(user_key_hash(user_key))
@@ -519,12 +559,12 @@ class MemoryService:
             return 0, False
         truncated = len(content) > MAX_MEMORY_CHARS
         content = content[:MAX_MEMORY_CHARS]
-        now = self.clock()
-        with self._state_lock:
+        with self._state_transition():
+            now = self.clock()
             user = self.store.ensure_user(user_key, now)
             if not user["enabled"]:
                 self.store.set_user_flags(user_key, now, enabled=1)
-            self.refresh_auth(user_key, now)
+            self._refresh_auth_impl(user_key, now)
             memory_id = self.store.save_memory(
                 user_key, category, content, normalize_content(content), now)
             self.rebuild_context(user_key, now)
@@ -532,11 +572,11 @@ class MemoryService:
             return memory_id, truncated
 
     def forget(self, user_key: str, memory_id: int) -> bool:
-        now = self.clock()
-        with self._state_lock:
+        with self._state_transition():
+            now = self.clock()
             if not self.store.remove_memory(user_key, memory_id, now):
                 return False
-            self.refresh_auth(user_key, now)
+            self._refresh_auth_impl(user_key, now)
             self._drop_context(user_key, now)
             self.rebuild_context(user_key, now)
             self.log.info("记忆：forget(%s) #%d", self._tag(user_key), memory_id)

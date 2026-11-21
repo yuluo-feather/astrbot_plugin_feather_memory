@@ -118,6 +118,15 @@ def test_delete_context_waits_for_lock(feed, clock):
     assert feed.read_context(digest) is None
 
 
+def test_delete_context_if_skips_when_guard_false(feed, clock):
+    digest = user_key_hash("aiocqhttp:1")
+    feed.write_context(digest, _context(clock, 1))
+    assert feed.delete_context_if(digest, lambda: False) == "skipped"
+    assert feed.read_context(digest) is not None
+    assert feed.delete_context_if(digest, lambda: True) == "deleted"
+    assert feed.read_context(digest) is None
+
+
 def test_context_lock_timeout(feed, clock):
     digest = user_key_hash("aiocqhttp:1")
     lock_path = feed.layout.context_dir / f"{digest}.lock"

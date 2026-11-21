@@ -4,6 +4,7 @@ from __future__ import annotations
 import threading
 
 from data.plugins.astrbot_plugin_feather_memory.core.identity import user_key_hash
+from data.plugins.astrbot_plugin_feather_memory.core.timeutil import format_ts_precise
 
 
 def _context(service, feed, user):
@@ -145,17 +146,17 @@ def test_empty_rebuild_during_new_memory_keeps_dirty(
     service.clear(user)
     service.enable(user)
     assert _context(service, feed, user) is None
-    original_drop = service._drop_context
+    original_drop = service._drop_context_guarded
 
-    def saving_drop(user_key, now):
+    def saving_drop(user_key, now, guard):
         service.store.save_memory(user_key, "preference", "喜欢雨天", "喜欢雨天", now)
-        return original_drop(user_key, now)
+        return original_drop(user_key, now, guard)
 
-    monkeypatch.setattr(service, "_drop_context", saving_drop)
+    monkeypatch.setattr(service, "_drop_context_guarded", saving_drop)
     assert service.rebuild_context(user) == "superseded"
     assert service.user_state(user)["context_dirty"] == 1
 
-    monkeypatch.setattr(service, "_drop_context", original_drop)
+    monkeypatch.setattr(service, "_drop_context_guarded", original_drop)
     service.rebuild_context(user)
     context = _context(service, feed, user)
     assert context is not None and "喜欢雨天" in context.text
@@ -203,3 +204,88 @@ def test_two_rebuilds_keep_highest_revision(service, feed, enabled_user, monkeyp
     context = _context(service, feed, user)
     assert context is not None
     assert context.revision == service.user_state(user)["context_revision"]
+
+
+def test_empty_rebuild_restores_dirty_when_clear_condition_fails(
+        service, feed, enabled_user, monkeypatch):
+    user = enabled_user
+    service.clear(user)
+    service.enable(user)
+    original = service.store.clear_dirty_if_revision
+    calls = {"count": 0}
+
+    def first_false(user_key, revision, now, *, require_enabled=True):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return False
+        return original(user_key, revision, now, require_enabled=require_enabled)
+
+    monkeypatch.setattr(service.store, "clear_dirty_if_revision", first_false)
+    assert service.rebuild_context(user) == "superseded"
+    assert service.user_state(user)["context_dirty"] == 1
+
+
+def test_transition_timestamp_taken_after_lock(service, feed, clock, enabled_user):
+    user = enabled_user
+
+    def advance():
+        clock.advance(seconds=10)
+
+    service._transition_hook = advance
+    try:
+        service.disable(user)
+    finally:
+        service._transition_hook = None
+    row = service.user_state(user)
+    assert row["disabled_at"] == format_ts_precise(clock.now())
+
+
+def test_state_transition_waits_for_shared_state_lock(service, feed, enabled_user):
+    user = enabled_user
+    done = threading.Event()
+    errors: list[BaseException] = []
+
+    def disable():
+        try:
+            service.disable(user)
+        except BaseException as exc:  # pragma: no cover
+            errors.append(exc)
+        finally:
+            done.set()
+
+    with feed.state_lock():
+        thread = threading.Thread(target=disable)
+        thread.start()
+        assert not done.wait(0.2)
+    assert done.wait(5)
+    thread.join(5)
+    assert errors == []
+
+
+def test_state_lock_blocks_second_transition(service, enabled_user):
+    user = enabled_user
+    first_inside = threading.Event()
+    release_first = threading.Event()
+    second_inside = threading.Event()
+    calls = {"count": 0}
+
+    def hook():
+        calls["count"] += 1
+        if calls["count"] == 1:
+            first_inside.set()
+            release_first.wait(5)
+        else:
+            second_inside.set()
+
+    service._transition_hook = hook
+    first = threading.Thread(target=service.disable, args=(user,))
+    first.start()
+    assert first_inside.wait(5)
+    second = threading.Thread(target=service.enable, args=(user,))
+    second.start()
+    assert not second_inside.wait(0.2)
+    release_first.set()
+    first.join(5)
+    second.join(5)
+    service._transition_hook = None
+    assert second_inside.is_set()

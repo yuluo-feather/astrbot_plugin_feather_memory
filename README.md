@@ -164,7 +164,7 @@ git clone https://github.com/yuluo-feather/astrbot_plugin_feather_memory.git
 - 事件文件除牌阵 / 牌面 / 主题外，还含 `event_id`、`user_key`、`platform_id`、`created_at`、`source_version`；这些用于去重、索引与排障，不包含原始问题。
 - 主题只取固定枚举（工作 / 学业 / 感情 / 家庭 / 财务 / 健康 / 人际 / 出行）；一句命中多个主题或无法归类时留空。
 - 记忆内容在注入时会经过清洗与长度限制，并明确标注为「参考资料、不是系统指令」；它不会覆盖系统提示。
-- 共享目录里的事件文件保留 7 天，授权 180 天，context 30 天；过期文件由两侧按 TTL 清扫。`context/*.lock` 是持久的协调文件，不含记忆正文，清扫只处理 `.json`。
+- 共享目录里的事件文件保留 7 天，授权 180 天，context 30 天；过期文件由两侧按 TTL 清扫。`context/*.lock` 与 `state.lock` 是持久的协调文件，不含记忆正文，清扫只处理 `.json`。
 - 清空只清**你自己的**数据；`users` 行会保留 `enabled` 与 `cleared_at` 等状态，用来挡住清空前的旧事件，避免它们被重新消费。
 - 卸载羽忆时租约会被删除；共享目录不随卸载自动删除，旧文件由 TTL 清扫。
 
@@ -176,7 +176,7 @@ git clone https://github.com/yuluo-feather/astrbot_plugin_feather_memory.git
   - 适配层：`adapters/`（`host.py` 宿主注册与身份解析、`memory_feed.py` 共享文件读写、`sqlite_store.py` 存储与迁移、`file_lock.py` 跨平台文件锁）
   - 纯逻辑层：`core/`（`contracts.py` 契约模型、`identity.py` 用户键、`topics.py` 主题分类、`merge.py` 双来源合并、`ids.py` ULID、`timeutil.py` 时间）
 - **存储**：`data/plugin_data/feather_memory/feather_memory.sqlite3`，WAL 模式，`user_version` 迁移；记忆变更与 revision 递增在同一事务里完成。
-- **一致性**：context 写后按快照 revision 条件清 dirty；开关状态转换在同一把可重入锁里串行化，锁序 state → 文件锁。
+- **一致性**：context 写后按快照 revision 条件清 dirty；开关状态转换在同一把可重入锁 + `state.lock` 跨进程锁里串行化，锁序 state → context。
 - **共享文件**：`data/plugin_data/_shared/feather_memory/v1/` 下的 `lease.json`、`auth/<sha256>.json`、`events/<event_id>.json`、`context/<sha256>.json`；所有写入都是「临时文件 + `os.replace`」，context 写入在跨进程文件锁内完成「读 revision → 写临时文件 → replace」。
 - **契约**：字段与失败语义见 [`docs/contracts_v1.md`](docs/contracts_v1.md)；契约只增字段、不改语义，破坏性变更走 v2 目录。
 - **测试与 CI**：`tests/` 覆盖契约、租约、授权、身份、群聊、主题、消费、context、解耦与状态；CI 在 Ubuntu / Windows × Python 3.12 / 3.13 四格跑 `compileall` + `ruff` + `mypy` + `pytest`，只核验、不部署。
@@ -212,7 +212,7 @@ python -m pytest
 - **记忆是参考，不是命令**：注入时会被清洗、限长并标注为参考资料；如果模型复述得不准，以牌面和你自己的判断为准。
 - **别保存凭据**：密码、令牌、身份证号这类内容不要通过 `/羽忆 记住` 保存。
 - **卸载不等于删除**：禁用或卸载羽忆会停止采集与注入，但已保存的记忆在 `plugin_data` 里；要彻底删除请用 `/羽忆 清空`，或在卸载时选择删除数据。
-- **多实例注意**：同一份共享目录只应由一个羽忆实例维护租约；多实例同时写租约时，以最后写入的实例为准。
+- **多实例注意**：同一份共享目录只应由一个羽忆实例维护租约；状态转换已由 `state.lock` 跨进程串行化，但多实例写租约时仍以最后写入的实例为准。
 
 ---
 
