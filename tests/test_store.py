@@ -71,6 +71,8 @@ def test_migrates_v2_adds_exports_table(tmp_path):
         tables = {row[0] for row in conn.execute(
             "SELECT name FROM sqlite_master WHERE type = 'table'")}
         assert "exports" in tables
+        columns = {row[1] for row in conn.execute("PRAGMA table_info(exports)")}
+        assert {"id", "user_key", "filename", "created_at"} <= columns
 
 
 def test_concurrent_inserts_do_not_lose_committed(store, clock, make_event):

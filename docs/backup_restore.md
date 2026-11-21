@@ -19,7 +19,7 @@ data/plugin_data/_shared/feather_memory/v1/
 - **必须备份**：`plugin_data/feather_memory/`（SQLite 及其 `-wal` / `-shm`）。
 - **建议一起备份**：`_shared/feather_memory/v1/`，保持 DB 与 auth/context 来自同一快照。
 - `lease.json` 不必备份；恢复旧租约反而会让核心误以为羽忆仍在运行。
-- `exports/` 是用户主动导出的副本，含记忆正文，可随时删除；它不参与恢复。`/羽忆 清空` 会删除该用户的导出副本，`/羽忆 关闭` 不会。
+- `exports/` 是用户主动导出的副本，含记忆正文，不参与恢复；每个用户最多保留最近 5 份，超出自动清理。`/羽忆 清空` 会删除该用户的导出副本，`/羽忆 关闭` 不会。
 
 ## 2. 备份
 

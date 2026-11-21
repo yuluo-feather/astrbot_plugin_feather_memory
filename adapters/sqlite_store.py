@@ -73,22 +73,21 @@ CREATE TABLE IF NOT EXISTS suppressed_topics (
   created_at TEXT NOT NULL,
   PRIMARY KEY (user_key, topic_key)
 );
-
-CREATE TABLE IF NOT EXISTS exports (
-  user_key TEXT NOT NULL,
-  filename TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  PRIMARY KEY (user_key, filename)
-);
 """
 
 SCHEMA_V3_EXPORTS = """
 CREATE TABLE IF NOT EXISTS exports (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_key TEXT NOT NULL,
   filename TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  PRIMARY KEY (user_key, filename)
+  created_at TEXT NOT NULL
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_exports_owner_file
+ON exports(user_key, filename);
+
+CREATE INDEX IF NOT EXISTS idx_exports_owner
+ON exports(user_key, id DESC);
 """
 
 _USER_FIELDS = ("enabled", "auto_history", "store_topic", "context_dirty")
@@ -123,6 +122,7 @@ class SqliteStore:
             version = conn.execute("PRAGMA user_version").fetchone()[0]
             if version == 0:
                 conn.executescript(SCHEMA_V1)
+                conn.executescript(SCHEMA_V3_EXPORTS)
                 conn.execute("PRAGMA user_version = 3")
             elif version == 1:
                 conn.execute(
@@ -522,13 +522,6 @@ class SqliteStore:
                 (user_key, filename, format_ts(now)),
             )
 
-    def remove_export(self, user_key: str, filename: str) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                "DELETE FROM exports WHERE user_key = ? AND filename = ?",
-                (user_key, filename),
-            )
-
     def take_exports(self, user_key: str) -> list[str]:
         """取出并删除该用户的导出索引，供清空时删除对应文件。"""
         with self._connect(immediate=True) as conn:
@@ -537,6 +530,21 @@ class SqliteStore:
             ).fetchall()
             conn.execute("DELETE FROM exports WHERE user_key = ?", (user_key,))
         return [row["filename"] for row in rows]
+
+    def trim_exports(self, user_key: str, keep: int) -> list[str]:
+        """只保留最近 keep 份导出，返回被淘汰的文件名（由调用方删文件）。"""
+        with self._connect(immediate=True) as conn:
+            rows = conn.execute(
+                "SELECT id, filename FROM exports WHERE user_key = ? ORDER BY id DESC",
+                (user_key,),
+            ).fetchall()
+            stale = rows[keep:]
+            if stale:
+                conn.executemany(
+                    "DELETE FROM exports WHERE id = ?",
+                    [(row["id"],) for row in stale],
+                )
+        return [row["filename"] for row in stale]
 
     # ---- clear ---------------------------------------------------------
 

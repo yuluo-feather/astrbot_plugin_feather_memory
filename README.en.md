@@ -56,7 +56,7 @@ Feather Memory does not touch the framework KV store and does not import Star Fe
 | Feature | Command | Description |
 |---------|---------|-------------|
 | 📖 View | `/羽忆`, `/羽忆 查看`, `/羽忆 查看记忆`, `/羽忆 列表` | List saved entries and recent topics |
-| 📤 Export | `/羽忆 导出` | Write your memories, recent topics and switch states to `plugin_data/feather_memory/exports/` and reply with the file path |
+| 📤 Export | `/羽忆 导出` | Write your memories, recent topics and switch states to `plugin_data/feather_memory/exports/` and reply with the file path; the latest 5 exports per user are kept |
 | ✍️ Remember | `/羽忆 记住 <text>` | Save a preference / background / goal (optional `偏好` / `背景` / `目标` prefix; enables the master switch) |
 | ✏️ Modify | `/羽忆 修改 <id> <new text>` | Modify one saved entry; keeps its id, optional prefix changes category, truncates at 160 chars |
 | 🗑️ Forget | `/羽忆 忘记 <id>` | Delete one saved entry (ids look like `#12` in the list) |

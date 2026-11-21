@@ -49,6 +49,7 @@ MAX_MEMORY_CHARS = 160
 CLEAR_CONFIRM_SECONDS = 60
 CLEANUP_INTERVAL_SECONDS = 3600
 AUTH_REFRESH_INTERVAL_SECONDS = 86400
+EXPORT_KEEP_COUNT = 5
 
 _CATEGORY_PREFIXES = (
     ("偏好", "preference"),
@@ -744,7 +745,6 @@ class MemoryService:
             path = directory / filename
             data = json.dumps(payload, ensure_ascii=False, indent=2).encode("utf-8")
             tmp = path.with_name(f"{path.name}.tmp-{os.getpid()}")
-            self.store.add_export(user_key, filename, now)
             try:
                 fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
                 with os.fdopen(fd, "wb") as handle:
@@ -752,8 +752,12 @@ class MemoryService:
                     handle.flush()
                     os.fsync(handle.fileno())
                 os.replace(tmp, path)
-            except OSError:
-                self.store.remove_export(user_key, filename)
+                self.store.add_export(user_key, filename, now)
+            except Exception:
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
                 raise
             finally:
                 if tmp.exists():
@@ -761,9 +765,27 @@ class MemoryService:
                         tmp.unlink()
                     except OSError:
                         pass
+            self._trim_exports(user_key, directory)
         self.log.info("导出：user=%s 记忆=%d 主题=%d",
                       self._tag(user_key), len(memories), len(topics))
         return path, payload
+
+    def _trim_exports(self, user_key: str, directory: Path) -> None:
+        """每个用户只保留最近 EXPORT_KEEP_COUNT 份导出。"""
+        try:
+            stale = self.store.trim_exports(user_key, EXPORT_KEEP_COUNT)
+        except Exception as exc:
+            self.log.warning("导出轮转失败：%s", exc)
+            return
+        for name in stale:
+            if Path(name).name != name:
+                continue
+            try:
+                (directory / name).unlink()
+            except FileNotFoundError:
+                continue
+            except OSError as exc:
+                self.log.warning("删除旧导出失败：%s", exc)
 
     def status(self, user_key: str) -> dict:
         now = self.clock()

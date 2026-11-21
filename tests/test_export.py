@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import re
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -18,6 +19,12 @@ def _export_path(reply: str) -> Path:
     match = re.search(r"文件：(.+\.json)", reply)
     assert match is not None, reply
     return Path(match.group(1).strip())
+
+
+def _export_rows(service, user_key: str) -> list[str]:
+    with sqlite3.connect(service.store.path) as conn:
+        return [row[0] for row in conn.execute(
+            "SELECT filename FROM exports WHERE user_key = ?", (user_key,))]
 
 
 def test_export_writes_required_fields_without_identifiers(service):
@@ -185,10 +192,36 @@ def test_clear_removes_exported_files(service):
     service.remember(USER, "偏好 温柔")
     path = _export_path(handle_command(service, USER, True, "导出"))
     assert path.exists()
+    assert _export_rows(service, USER) == [path.name]
 
     assert handle_command(service, USER, True, "清空").startswith("确认清空")
     assert "已清空" in handle_command(service, USER, True, "确认")
     assert not path.exists()
+    assert _export_rows(service, USER) == []
+
+
+def test_clear_succeeds_when_export_file_is_missing(service):
+    service.startup()
+    service.enable(USER)
+    service.remember(USER, "偏好 温柔")
+    path = _export_path(handle_command(service, USER, True, "导出"))
+    path.unlink()
+
+    assert handle_command(service, USER, True, "清空").startswith("确认清空")
+    assert handle_command(service, USER, True, "确认").startswith("已清空")
+    assert _export_rows(service, USER) == []
+
+
+def test_export_keeps_latest_five(service):
+    service.startup()
+    service.enable(USER)
+    paths = [_export_path(handle_command(service, USER, True, "导出"))
+             for _ in range(6)]
+    assert len({path.name for path in paths}) == 6
+    assert not paths[0].exists()
+    assert all(path.exists() for path in paths[1:])
+    assert sorted(_export_rows(service, USER)) == sorted(
+        path.name for path in paths[1:])
 
 
 def test_disable_keeps_exported_files(service):
