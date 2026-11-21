@@ -596,6 +596,35 @@ class MemoryService:
             self.log.info("记忆：forget(%s) #%d", self._tag(user_key), memory_id)
             return True
 
+    def update_memory(self, user_key: str, memory_id: int,
+                      raw: str) -> tuple[str, bool]:
+        text = " ".join((raw or "").split())
+        category_hint = None
+        for prefix, category in _CATEGORY_PREFIXES:
+            if text.startswith(prefix):
+                category_hint = category
+                text = text[len(prefix):].lstrip("：:，, ")
+                break
+        if not text:
+            return "empty", False
+        truncated = len(text) > MAX_MEMORY_CHARS
+        text = text[:MAX_MEMORY_CHARS]
+        with self._state_transition():
+            now = self.clock()
+            old = self.store.get_memory(user_key, memory_id)
+            if old is None:
+                return "missing", False
+            category = category_hint or old["category"]
+            code = self.store.update_memory(
+                user_key, memory_id, category, text,
+                normalize_content(text), now)
+            if code != "ok":
+                return code, False
+            self._drop_context(user_key, now)
+            self.rebuild_context(user_key, now)
+            self.log.info("记忆：update(%s) #%d", self._tag(user_key), memory_id)
+            return "ok", truncated
+
     # ---- read models ---------------------------------------------------
 
     def list_display(self, user_key: str) -> tuple[list[ExplicitEntry], list[TopicStat]]:

@@ -424,6 +424,43 @@ def test_disabled_at_blocks_old_events_after_reenable(
     assert [(item.topic_key, item.count) for item in stats] == [("工作", 1)]
 
 
+def test_update_memory_preserves_id_and_category(service, feed, clock, enabled_user):
+    memory_id, _ = service.remember(enabled_user, "偏好 温柔")
+    revision = service.user_state(enabled_user)["context_revision"]
+    code, truncated = service.update_memory(enabled_user, memory_id, "更温柔")
+    assert (code, truncated) == ("ok", False)
+    memories, _ = service.list_display(enabled_user)
+    assert [(item.memory_id, item.category, item.content) for item in memories] == [
+        (memory_id, "preference", "更温柔")]
+    assert service.user_state(enabled_user)["context_revision"] == revision + 1
+    context = feed.read_context(user_key_hash(enabled_user))
+    assert context is not None and "更温柔" in context.text
+
+
+def test_update_memory_can_change_category(service, enabled_user):
+    memory_id, _ = service.remember(enabled_user, "偏好 温柔")
+    assert service.update_memory(enabled_user, memory_id, "背景 学生") == ("ok", False)
+    memories, _ = service.list_display(enabled_user)
+    assert memories[0].category == "background"
+
+
+def test_update_memory_missing_and_duplicate(service, enabled_user):
+    first, _ = service.remember(enabled_user, "喜欢温柔")
+    service.remember(enabled_user, "喜欢雨天")
+    assert service.update_memory(enabled_user, first, "喜欢雨天")[0] == "duplicate"
+    memories, _ = service.list_display(enabled_user)
+    assert any(item.content == "喜欢温柔" for item in memories)
+    assert service.update_memory(enabled_user, 99999, "随便")[0] == "missing"
+
+
+def test_update_memory_truncates(service, enabled_user):
+    memory_id, _ = service.remember(enabled_user, "喜欢温柔")
+    code, truncated = service.update_memory(enabled_user, memory_id, "长" * 200)
+    assert (code, truncated) == ("ok", True)
+    memories, _ = service.list_display(enabled_user)
+    assert memories[0].content == "长" * 160
+
+
 def test_stats_is_read_only_counts(service, feed, make_event, enabled_user):
     service.remember(enabled_user, "喜欢温柔")
     feed.write_event(make_event("01JSTAT", enabled_user))

@@ -278,6 +278,40 @@ class SqliteStore:
         return [ExplicitEntry(memory_id=int(row["id"]), category=row["category"],
                               content=row["content"]) for row in rows]
 
+    def get_memory(self, user_key: str, memory_id: int) -> dict | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM memories WHERE user_key = ? AND id = ?",
+                (user_key, memory_id),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def update_memory(self, user_key: str, memory_id: int, category: str,
+                      content: str, normalized: str, now: datetime) -> str:
+        """单事务更新内容/分类并递增 revision；失败保留旧内容。"""
+        stamp = format_ts(now)
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT id FROM memories WHERE user_key = ? AND id = ?",
+                (user_key, memory_id),
+            ).fetchone()
+            if row is None:
+                return "missing"
+            try:
+                conn.execute(
+                    "UPDATE memories SET category = ?, content = ?, normalized_content = ?,"
+                    " updated_at = ? WHERE user_key = ? AND id = ?",
+                    (category, content, normalized, stamp, user_key, memory_id),
+                )
+            except sqlite3.IntegrityError:
+                return "duplicate"
+            conn.execute(
+                "UPDATE users SET context_revision = context_revision + 1,"
+                " context_dirty = 1, updated_at = ? WHERE user_key = ?",
+                (stamp, user_key),
+            )
+        return "ok"
+
     def delete_memory(self, user_key: str, memory_id: int) -> bool:
         with self._connect() as conn:
             cursor = conn.execute(

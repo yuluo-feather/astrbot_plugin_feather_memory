@@ -54,8 +54,9 @@ Feather Memory does not touch the framework KV store and does not import Star Fe
 
 | Feature | Command | Description |
 |---------|---------|-------------|
-| 📖 View | `/羽忆` | List saved entries and recent topics |
+| 📖 View | `/羽忆`, `/羽忆 查看`, `/羽忆 查看记忆`, `/羽忆 列表` | List saved entries and recent topics |
 | ✍️ Remember | `/羽忆 记住 <text>` | Save a preference / background / goal (optional `偏好` / `背景` / `目标` prefix; enables the master switch) |
+| ✏️ Modify | `/羽忆 修改 <id> <new text>` | Modify one saved entry; keeps its id, optional prefix changes category, truncates at 160 chars |
 | 🗑️ Forget | `/羽忆 忘记 <id>` | Delete one saved entry (ids look like `#12` in the list) |
 | 🧹 Clear | `/羽忆 清空` | Clear **your own** Feather Memory data after a second confirmation (send `/羽忆 清空 确认` within 60 seconds) |
 | 🔛 Enable | `/羽忆 开启` | Turn on the master switch, auto history and topic recording in one step (one auth write) |
@@ -70,6 +71,8 @@ Feather Memory does not touch the framework KV store and does not import Star Fe
 
 ```
 /羽忆 记住 背景 最近在准备考研，压力有点大
+/羽忆 查看
+/羽忆 修改 1 背景 最近在准备复试
 /羽忆 状态
 /羽忆 开启
 /羽忆 关闭 自动

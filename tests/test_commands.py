@@ -54,6 +54,56 @@ def test_full_command_flow(service):
     assert "#1" not in listing
 
 
+def test_help_commands_are_executable(service):
+    service.startup()
+    commands = [
+        "查看记忆", "查看", "列表", "",
+        "记住 偏好 温柔一点", "修改 1 偏好 更温柔", "忘记 1",
+        "清空",
+        "开启", "开启 自动", "开启 主题",
+        "关闭 自动", "关闭 主题", "关闭", "状态",
+    ]
+    for command in commands:
+        assert handle_command(service, USER, True, command) != HELP_TEXT, command
+
+
+def test_view_aliases_equal_bare_command(service):
+    service.startup()
+    service.enable(USER)
+    service.remember(USER, "喜欢温柔")
+    base = handle_command(service, USER, True, "")
+    for alias in ("查看", "查看记忆", "列表"):
+        assert handle_command(service, USER, True, alias) == base
+
+
+def test_remember_usage_includes_example(service):
+    service.startup()
+    reply = handle_command(service, USER, True, "记住")
+    assert "示例：/羽忆 记住 偏好 温柔一点" in reply
+
+
+def test_forget_usage_points_to_view(service):
+    service.startup()
+    reply = handle_command(service, USER, True, "忘记 x")
+    assert "/羽忆 查看" in reply
+
+
+def test_modify_memory(service):
+    service.startup()
+    service.enable(USER)
+    service.remember(USER, "偏好 温柔")
+    assert handle_command(service, USER, True, "修改 1 更温柔") == "已更新 #1。"
+    listing = handle_command(service, USER, True, "")
+    assert "#1 [偏好] 更温柔" in listing
+    assert handle_command(service, USER, True, "修改 #1 背景 学生") == "已更新 #1。"
+    listing = handle_command(service, USER, True, "")
+    assert "#1 [背景] 学生" in listing
+    assert handle_command(service, USER, True, "修改 99 随便") == "没有找到 #99，旧内容未改变。"
+    assert handle_command(service, USER, True, "修改 1").startswith("用法：/羽忆 修改")
+    assert handle_command(service, USER, True, "修改 1 " + "长" * 200).endswith(
+        "（内容过长，已截断到 160 字）。")
+
+
 def test_remember_category_prefix(service):
     service.startup()
     handle_command(service, USER, True, "开启")
@@ -103,6 +153,54 @@ def test_forget_accepts_hash_prefix(service):
     handle_command(service, USER, True, "开启")
     handle_command(service, USER, True, "记住 喜欢温柔")
     assert handle_command(service, USER, True, "忘记 #1") == "已删除 #1。"
+
+
+def test_list_footer_has_delete_and_modify(service):
+    service.startup()
+    service.enable(USER)
+    service.remember(USER, "喜欢温柔")
+    listing = handle_command(service, USER, True, "")
+    assert "删除：/羽忆 忘记 <id>；修改：/羽忆 修改 <id> <新内容>" in listing
+
+
+def test_status_suggests_global_switch(store, feed, clock):
+    service = MemoryService(store, feed, global_enabled=False, version="0.1.0",
+                            clock=clock.now)
+    assert "memory.enabled" in handle_command(service, USER, True, "状态")
+
+
+def test_status_suggests_lease_wait(service, feed):
+    service.startup()
+    feed.layout.lease_path.unlink()
+    assert "5–10 秒" in handle_command(service, USER, True, "状态")
+
+
+def test_status_suggests_enable_and_auto(service):
+    service.startup()
+    assert "/羽忆 开启 打开总开关" in handle_command(service, USER, True, "状态")
+    service.enable(USER)
+    service.disable_auto(USER)
+    assert "开启 自动" in handle_command(service, USER, True, "状态")
+
+
+def test_status_suggests_auth_and_first_reading(service, feed):
+    service.startup()
+    service.enable(USER)
+    feed.delete_auth(user_key_hash(USER))
+    assert "刷新授权" in handle_command(service, USER, True, "状态")
+    service.enable(USER)
+    assert "私聊普通占卜" in handle_command(service, USER, True, "状态")
+
+
+def test_status_suggests_pending_and_quiet_when_healthy(
+        service, feed, clock, make_event):
+    service.startup()
+    service.enable(USER)
+    feed.write_event(make_event("01J1", USER))
+    assert "5 秒内" in handle_command(service, USER, True, "状态")
+    service.consume_pending(clock.now())
+    service.remember(USER, "喜欢温柔")
+    assert "下一步：" not in handle_command(service, USER, True, "状态")
 
 
 def test_global_disabled_still_allows_close_and_clear(store, feed, clock):

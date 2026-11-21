@@ -11,10 +11,11 @@ CATEGORY_LABELS = {
 
 HELP_TEXT = (
     "羽忆命令：\n"
-    "/羽忆 查看记忆\n"
+    "/羽忆 查看记忆（也可 /羽忆 查看、/羽忆 列表 或直接 /羽忆）\n"
     "/羽忆 记住 <内容>（可用「偏好 …」「背景 …」「目标 …」）\n"
+    "/羽忆 修改 <id> <新内容>\n"
     "/羽忆 忘记 <id>\n"
-    "/羽忆 清空（需二次确认）\n"
+    "/羽忆 清空（需 /羽忆 清空 确认）\n"
     "/羽忆 开启（一次打开总开关、自动历史、主题记录）\n"
     "/羽忆 开启 自动 | 开启 主题（单项细调）\n"
     "/羽忆 关闭 自动 | 关闭 主题（单项关闭）\n"
@@ -53,6 +54,7 @@ def _list_text(service: MemoryService, user_key: str) -> str:
         lines.append("自动历史：关闭（发送 /羽忆 开启 自动）")
     elif not user["store_topic"]:
         lines.append("主题记录：关闭（发送 /羽忆 开启 主题）")
+    lines.append("删除：/羽忆 忘记 <id>；修改：/羽忆 修改 <id> <新内容>")
     return "\n".join(lines)
 
 
@@ -75,9 +77,14 @@ def _status_text(service: MemoryService, user_key: str, is_private: bool) -> str
         return "\n".join(lines)
 
     user = info["user"]
+    context = info["context"]
+    context_usable = context is not None and context.is_usable(service.clock())
     if user is None or not user["enabled"]:
         lines.append("本用户：未开启")
+        lines.append(f"待处理事件：{info['pending_events']} 条")
+        _append_suggestions(lines, info, user, context_usable)
         return "\n".join(lines)
+
     lines.append("本用户：已开启")
     lines.append("自动历史：" + ("开" if user["auto_history"] else "关"))
     lines.append("主题记录：" + ("开" if user["store_topic"] else "关"))
@@ -87,15 +94,37 @@ def _status_text(service: MemoryService, user_key: str, is_private: bool) -> str
         lines.append("授权文件：已过期")
     else:
         lines.append("授权文件：无")
-    context = info["context"]
-    if context is not None and context.is_usable(service.clock()):
-        dirty = "是" if user["context_dirty"] else "否"
+    dirty = "是" if user["context_dirty"] else "否"
+    if context_usable:
         lines.append(f"记忆上下文：revision {context.revision}（dirty={dirty}）")
     else:
-        dirty = "是" if user["context_dirty"] else "否"
         lines.append(f"记忆上下文：无（dirty={dirty}）")
     lines.append(f"待处理事件：{info['pending_events']} 条")
+    _append_suggestions(lines, info, user, context_usable)
     return "\n".join(lines)
+
+
+def _append_suggestions(lines: list[str], info: dict, user: dict | None,
+                        context_usable: bool) -> None:
+    items: list[str] = []
+    if not info["global_enabled"]:
+        items.append("请管理员在羽忆插件配置打开 memory.enabled。")
+    elif not info["lease_valid"]:
+        items.append("确认羽忆已启用；启动后等 5–10 秒再看租约。")
+    elif user is None or not user["enabled"]:
+        items.append("发送 /羽忆 开启 打开总开关。")
+    elif not user["auto_history"]:
+        items.append("发送 /羽忆 开启 自动；或直接 /羽忆 开启 一键打开。")
+    elif not info["auth_valid"]:
+        items.append("发送 /羽忆 开启 刷新授权。")
+    elif not context_usable:
+        items.append("先做一次私聊普通占卜；仍没有可检查星羽侧 "
+                     "memory.feed_enabled / context_enabled。")
+    if info["pending_events"] > 0:
+        items.append("待处理事件会在 5 秒内被消费，稍等再看。")
+    if items:
+        lines.append("下一步：")
+        lines.extend(f"  - {item}" for item in items)
 
 
 def handle_command(service: MemoryService, user_key: str,
@@ -153,12 +182,13 @@ def handle_command(service: MemoryService, user_key: str,
             return _clear()
         return GLOBAL_OFF_TEXT
 
-    if sub == "":
+    if sub == "" or sub in ("查看", "查看记忆", "列表"):
         return _list_text(service, user_key)
 
     if sub == "记住":
         if not arg:
             return ("用法：/羽忆 记住 <内容>（可加「偏好」「背景」「目标」前缀）。"
+                    "示例：/羽忆 记住 偏好 温柔一点。"
                     "请不要保存密码、令牌或账号凭据。")
         memory_id, truncated = service.remember(user_key, arg)
         if not memory_id:
@@ -169,11 +199,29 @@ def handle_command(service: MemoryService, user_key: str,
     if sub == "忘记":
         digits = arg.lstrip("#")
         if not digits.isdigit():
-            return "用法：/羽忆 忘记 <id>（id 见 /羽忆 列表里的 #12，写 12 或 #12 都可以）。"
+            return ("用法：/羽忆 忘记 <id>（发 /羽忆 查看 看列表里的 #12，"
+                    "写 12 或 #12 都可以）。")
         memory_id = int(digits)
         if service.forget(user_key, memory_id):
             return f"已删除 #{memory_id}。"
         return f"没有找到 #{memory_id}。"
+
+    if sub == "修改":
+        parts = arg.split(maxsplit=1)
+        if (len(parts) < 2 or not parts[0].lstrip("#").isdigit()
+                or not parts[1].strip()):
+            return ("用法：/羽忆 修改 <id> <新内容>。"
+                    "示例：/羽忆 修改 #12 偏好 温柔一点。")
+        memory_id = int(parts[0].lstrip("#"))
+        code, truncated = service.update_memory(user_key, memory_id, parts[1])
+        if code == "missing":
+            return f"没有找到 #{memory_id}，旧内容未改变。"
+        if code == "duplicate":
+            return "已有一条相同内容，旧内容未改变。"
+        if code == "empty":
+            return "新内容为空，旧内容未改变。"
+        suffix = "（内容过长，已截断到 160 字）" if truncated else ""
+        return f"已更新 #{memory_id}{suffix}。"
 
     if sub in ("清空", "确认"):
         return _clear()
