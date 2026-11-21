@@ -1,0 +1,13 @@
+{
+  "schema": "star_feather.memory_context.v1",
+  "revision": 12,
+  "generated_at": "2026-11-21T20:15:05Z",
+  "expires_at": "2026-12-21T20:15:05Z",
+  "source": "feather_memory/0.1.0",
+  "scope": "private",
+  "items": [
+    {"kind": "preference", "text": "偏好温柔、平和的解读风格"},
+    {"kind": "recent_topic", "text": "工作（最近 3 次）"}
+  ],
+  "text": "这位用户偏好温柔、平和的解读风格；最近关注工作（最近 3 次）。"
+}

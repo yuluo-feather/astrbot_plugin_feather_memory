@@ -1,0 +1,8 @@
+{
+  "schema": "star_feather.memory_lease.v1",
+  "instance_id": "01J00000000000000000000000",
+  "started_at": "2026-11-21T12:00:00Z",
+  "refreshed_at": "2026-11-21T12:05:00Z",
+  "expires_at": "2026-11-21T12:10:00Z",
+  "source": "feather_memory/0.1.0"
+}

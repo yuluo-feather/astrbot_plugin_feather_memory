@@ -1,0 +1,143 @@
+# Python 字节码 / 编译产物
+__pycache__/
+__pycache__
+*.py[cod]
+*$py.class
+*.pyc
+*.pyo
+*.pyd
+*.so
+
+# 发布 / 打包
+build/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+*.manifest
+*.spec
+.Python
+
+# 测试 / 覆盖率
+.pytest_cache/
+.pytest_cache
+.ruff_cache/
+.ruff_cache
+.pytest_tmp*/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+cover/
+test-results/
+.test/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+
+# 虚拟环境
+.env
+.venv
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+__pypackages__/
+.uv/
+.python-version
+
+# IDE / 编辑器
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.spyderproject
+.spyproject
+.ropeproject
+.ipynb_checkpoints
+
+# 操作系统
+.DS_Store
+Thumbs.db
+
+# 日志 / 运行时数据
+*.log
+logs/
+storage/
+data/
+temp/
+tmp/
+*.tmp
+*.temp
+*.cache
+
+# 本地配置（含密钥风险）
+config.local.yaml
+config.yaml
+config.yml
+local_settings.py
+db.sqlite3
+db.sqlite3-journal
+
+# AI 助手 / 代理工具（规范真源在工作区根，不进插件仓）
+.claude/
+.claude-code-router/
+.iflow/
+.research/
+.trae/
+.codex/
+CLAUDE.md
+GEMINI.md
+AGENT.md
+AGENTS.md
+
+# 前端 / WebUI（如以后引入）
+webui/node_modules/
+webui/dist/
+node_modules/
+
+# 羽忆专有：SQLite 数据库只落在 data/plugin_data/feather_memory/
+*.sqlite3
+*.sqlite3-wal
+*.sqlite3-shm
+*.db
+*.db-journal
+
+# 发版脚本产物与发布归档
+release/
+commit_msg.txt
+
+# 备份文件
+*.bak
+*.backup
+*.orig
+
+# 未发布段只活在开发侧（发布时改名 vX.Y.Z.md 才入库）
+changelogs/unreleased.md
+
+# 开发侧维护工具（不进 repos 与市场包）
+tools/
+
+# 开发侧审查 / 核对报告（判据留档；不进 repos 与市场包）
+audits/

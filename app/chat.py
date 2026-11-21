@@ -1,0 +1,169 @@
+"""命令层：把 `/羽忆 …` 的文本解析成服务调用，并生成回复文案（纯 Python）。"""
+from __future__ import annotations
+
+from .service import MemoryService
+
+CATEGORY_LABELS = {
+    "preference": "偏好",
+    "background": "背景",
+    "goal": "目标",
+}
+
+HELP_TEXT = (
+    "羽忆命令：\n"
+    "/羽忆 查看记忆\n"
+    "/羽忆 记住 <内容>（可用「偏好 …」「背景 …」「目标 …」）\n"
+    "/羽忆 忘记 <id>\n"
+    "/羽忆 清空（需二次确认）\n"
+    "/羽忆 开启 | 开启 自动 | 开启 主题\n"
+    "/羽忆 关闭\n"
+    "/羽忆 状态\n"
+    "请不要保存密码、令牌或账号凭据。"
+)
+
+GLOBAL_OFF_TEXT = "羽忆未启用：请管理员在 AstrBot 插件配置里打开「羽忆 → 启用」。"
+PRIVATE_ONLY_TEXT = "羽忆的记忆查看与保存只能在私聊里进行；群聊可用 /羽忆 关闭 与 /羽忆 状态。"
+
+
+def _label(category: str) -> str:
+    return CATEGORY_LABELS.get(category, category)
+
+
+def _list_text(service: MemoryService, user_key: str) -> str:
+    user = service.user_state(user_key)
+    if user is None or not user["enabled"]:
+        return ("羽忆还没开启。发送 /羽忆 开启 打开总开关；"
+                "之后可以用 /羽忆 记住 … 保存偏好。")
+
+    memories, topics = service.list_display(user_key)
+    lines = ["羽忆 · 已开启", "主动保存"]
+    if memories:
+        lines.extend(f"  #{entry.memory_id} [{_label(entry.category)}] {entry.content}"
+                     for entry in memories)
+    else:
+        lines.append("  （还没有）")
+    lines.append("近期主题（最近 180 天）")
+    if topics:
+        lines.extend(f"  {topic.topic_key} · 最近 {topic.count} 次" for topic in topics)
+    else:
+        lines.append("  （还没有）")
+    if not user["auto_history"]:
+        lines.append("自动历史：关闭（发送 /羽忆 开启 自动）")
+    elif not user["store_topic"]:
+        lines.append("主题记录：关闭（发送 /羽忆 开启 主题）")
+    return "\n".join(lines)
+
+
+def _status_text(service: MemoryService, user_key: str, is_private: bool) -> str:
+    info = service.status(user_key)
+    lines = ["羽忆状态"]
+    lines.append("全局：" + ("已启用" if info["global_enabled"] else "未启用"))
+    lease = info["lease"]
+    if info["lease_valid"] and lease is not None and lease.expires_at:
+        from ..core.timeutil import parse_ts
+        remaining = max(0, int((parse_ts(lease.expires_at) - service.clock()).total_seconds()))
+        lines.append(
+            f"租约：有效（剩余 {remaining // 60} 分 {remaining % 60} 秒，"
+            f"实例 {lease.instance_id[:8]}）")
+    else:
+        lines.append("租约：无 / 已过期")
+
+    if not is_private:
+        lines.append("群聊内不展示个人记忆与主题。")
+        return "\n".join(lines)
+
+    user = info["user"]
+    if user is None or not user["enabled"]:
+        lines.append("本用户：未开启")
+        return "\n".join(lines)
+    lines.append("本用户：已开启")
+    lines.append("自动历史：" + ("开" if user["auto_history"] else "关"))
+    lines.append("主题记录：" + ("开" if user["store_topic"] else "关"))
+    if info["auth_valid"]:
+        lines.append("授权文件：有效")
+    elif info["auth"] is not None:
+        lines.append("授权文件：已过期")
+    else:
+        lines.append("授权文件：无")
+    context = info["context"]
+    if context is not None and context.is_usable(service.clock()):
+        dirty = "是" if user["context_dirty"] else "否"
+        lines.append(f"记忆上下文：revision {context.revision}（dirty={dirty}）")
+    else:
+        dirty = "是" if user["context_dirty"] else "否"
+        lines.append(f"记忆上下文：无（dirty={dirty}）")
+    lines.append(f"待处理事件：{info['pending_events']} 条")
+    return "\n".join(lines)
+
+
+def handle_command(service: MemoryService, user_key: str,
+                   is_private: bool, raw_text: str) -> str:
+    text = (raw_text or "").strip()
+    head, _, rest = text.partition(" ")
+    sub = head.strip()
+    arg = rest.strip()
+
+    if not service.global_enabled:
+        if sub == "状态":
+            return _status_text(service, user_key, is_private)
+        return GLOBAL_OFF_TEXT
+
+    if not is_private and sub not in ("状态", "关闭"):
+        return PRIVATE_ONLY_TEXT
+
+    if sub == "":
+        return _list_text(service, user_key)
+
+    if sub == "记住":
+        if not arg:
+            return ("用法：/羽忆 记住 <内容>（可加「偏好」「背景」「目标」前缀）。"
+                    "请不要保存密码、令牌或账号凭据。")
+        memory_id, truncated = service.remember(user_key, arg)
+        if not memory_id:
+            return "内容为空，没有保存。"
+        suffix = "（内容过长，已截断到 160 字）" if truncated else ""
+        return f"已保存 #{memory_id}{suffix}。"
+
+    if sub == "忘记":
+        if not arg.isdigit():
+            return "用法：/羽忆 忘记 <id>（id 见 /羽忆 列表里的 #12）。"
+        memory_id = int(arg)
+        if service.forget(user_key, memory_id):
+            return f"已删除 #{memory_id}。"
+        return f"没有找到 #{memory_id}。"
+
+    if sub == "清空":
+        if arg != "确认":
+            service.request_clear(user_key)
+            return "确认清空羽忆的全部数据？60 秒内发送 /羽忆 清空 确认 执行。"
+        if service.confirm_clear(user_key):
+            return "已清空羽忆数据，并关闭自动历史与主题记录。"
+        return "确认已过期，请重新发送 /羽忆 清空。"
+
+    if sub == "开启":
+        if arg == "":
+            service.enable(user_key)
+            return "羽忆已开启。自动历史默认关闭，需要时说 /羽忆 开启 自动。"
+        if arg == "自动":
+            code = service.enable_auto(user_key)
+            if code == "not_enabled":
+                return "请先发送 /羽忆 开启。"
+            return "自动历史已开启：之后私聊的普通占卜会记入近期主题（不保存原始问题）。"
+        if arg == "主题":
+            code = service.enable_topic(user_key)
+            if code == "not_enabled":
+                return "请先发送 /羽忆 开启。"
+            if code == "auto_required":
+                return "请先发送 /羽忆 开启 自动。"
+            return "主题记录已开启：事件里会带上固定主题枚举。"
+        return "用法：/羽忆 开启 | 开启 自动 | 开启 主题。"
+
+    if sub == "关闭":
+        service.disable(user_key)
+        return ("已关闭羽忆：授权、记忆上下文与待处理事件已清除；"
+                "已保存的记忆仍保留，发送 /羽忆 清空 可彻底删除。")
+
+    if sub == "状态":
+        return _status_text(service, user_key, is_private)
+
+    return HELP_TEXT

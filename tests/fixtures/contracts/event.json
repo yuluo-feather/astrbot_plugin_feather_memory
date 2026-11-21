@@ -1,0 +1,16 @@
+{
+  "schema": "star_feather.reading_event.v1",
+  "event_id": "01J00000000000000000000001",
+  "created_at": "2026-11-21T20:15:03Z",
+  "source_version": "0.11.0",
+  "platform_id": "aiocqhttp",
+  "user_key": "aiocqhttp:123456",
+  "conversation_scope": "private",
+  "kind": "spread",
+  "spread": "羽时三刻",
+  "cards": [
+    {"id": "swords_03", "upright": true}
+  ],
+  "topic_key": "工作",
+  "spirit_line_present": true
+}

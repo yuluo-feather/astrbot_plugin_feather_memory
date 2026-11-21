@@ -1,0 +1,516 @@
+"""羽忆业务编排：服务租约、事件消费、context 重建、开关状态转换。
+
+所有方法都是同步的，由宿主侧用 `asyncio.to_thread` 调用；
+`core/` 与 `app/` 都不 import astrbot。
+"""
+from __future__ import annotations
+
+import logging
+import threading
+from dataclasses import replace
+from datetime import datetime
+from typing import Callable
+
+from ..adapters.memory_feed import (
+    WRITE_ERROR,
+    WRITE_TIMEOUT,
+    WRITE_TOO_LARGE,
+    WRITE_WRITTEN,
+    MemoryFeed,
+)
+from ..adapters.sqlite_store import SqliteStore
+from ..core.contracts import (
+    ALLOWED_EVENT_KINDS,
+    AUTH_TTL_DAYS,
+    CONTEXT_TTL_DAYS,
+    LEASE_REFRESH_SECONDS,
+    LEASE_TTL_SECONDS,
+    SOURCE,
+    Auth,
+    ContractError,
+    Lease,
+    MemoryContext,
+    MemoryItem,
+    ReadingEvent,
+)
+from ..core.identity import user_key_hash
+from ..core.ids import new_ulid
+from ..core.merge import ExplicitEntry, TopicStat, compose_context
+from ..core.timeutil import add_days, add_seconds, format_ts, now_utc, parse_ts
+
+MAX_MEMORY_CHARS = 160
+CLEAR_CONFIRM_SECONDS = 60
+CLEANUP_INTERVAL_SECONDS = 3600
+AUTH_REFRESH_INTERVAL_SECONDS = 86400
+
+_CATEGORY_PREFIXES = (
+    ("偏好", "preference"),
+    ("背景", "background"),
+    ("目标", "goal"),
+)
+
+
+def parse_memory_input(raw: str) -> tuple[str, str]:
+    text = " ".join((raw or "").split())
+    if not text:
+        return "preference", ""
+    for prefix, category in _CATEGORY_PREFIXES:
+        if text.startswith(prefix):
+            return category, text[len(prefix):].lstrip("：:，, ")
+    return "preference", text
+
+
+def normalize_content(content: str) -> str:
+    return " ".join(content.split())
+
+
+class MemoryService:
+    def __init__(self, store: SqliteStore, feed: MemoryFeed, *,
+                 global_enabled: bool, version: str,
+                 clock: Callable[[], datetime] = now_utc,
+                 log: logging.Logger | None = None,
+                 instance_id: str | None = None):
+        self.store = store
+        self.feed = feed
+        self.global_enabled = global_enabled
+        self.version = version
+        self.clock = clock
+        self.log = log or logging.getLogger("feather_memory")
+        self.instance_id = instance_id or new_ulid(clock())
+        self.started_at = format_ts(clock())
+        self._state = "new"
+        self._lifecycle_lock = threading.Lock()
+        self._last_lease: datetime | None = None
+        self._last_cleanup: datetime | None = None
+        self._last_auth_refresh: datetime | None = None
+        self._clear_pending: dict[str, datetime] = {}
+
+    @property
+    def source(self) -> str:
+        return f"{SOURCE}/{self.version}"
+
+    @staticmethod
+    def _tag(user_key: str) -> str:
+        """日志只留身份摘要前 8 位，不打完整 uid。"""
+        return user_key_hash(user_key)[:8]
+
+    # ---- lifecycle -----------------------------------------------------
+
+    def startup(self) -> None:
+        self.store.initialize()
+        now = self.clock()
+        if self.global_enabled:
+            self._refresh_lease(now)
+            self.consume_pending(now)
+            self.rebuild_all_contexts(now)
+            self.refresh_auth_all(now)
+        self.cleanup(now)
+        self._state = "started"
+        self.log.info(
+            "启动完成：全局=%s，用户=%d，待处理事件=%d，租约=%s，实例=%s",
+            "开" if self.global_enabled else "关",
+            len(self.store.all_users()),
+            len(self.feed.iter_events()),
+            "有效" if self.global_enabled and self._lease_ok(now) else "无",
+            self.instance_id[:8],
+        )
+
+    def shutdown(self) -> None:
+        with self._lifecycle_lock:
+            self._state = "stopped"
+            try:
+                self.feed.delete_lease(self.instance_id)
+            except OSError as exc:
+                self.log.warning("租约删除失败：%s", exc)
+
+    def tick(self) -> None:
+        if self._state != "started":
+            return
+        now = self.clock()
+        if self.global_enabled:
+            if (self._last_lease is None
+                    or (now - self._last_lease).total_seconds() >= LEASE_REFRESH_SECONDS):
+                self._refresh_lease(now)
+            self.consume_pending(now)
+            if (self._last_auth_refresh is None
+                    or (now - self._last_auth_refresh).total_seconds()
+                    >= AUTH_REFRESH_INTERVAL_SECONDS):
+                self.refresh_auth_all(now)
+        if (self._last_cleanup is None
+                or (now - self._last_cleanup).total_seconds() >= CLEANUP_INTERVAL_SECONDS):
+            self.cleanup(now)
+
+    # ---- lease ---------------------------------------------------------
+
+    def _refresh_lease(self, now: datetime) -> None:
+        lease = Lease(
+            instance_id=self.instance_id,
+            started_at=self.started_at,
+            refreshed_at=format_ts(now),
+            expires_at=format_ts(add_seconds(now, LEASE_TTL_SECONDS)),
+            source=self.source,
+        )
+        with self._lifecycle_lock:
+            # 关闭与刷新互斥：已经进入线程池的 tick 不得在 shutdown 删租约后写回。
+            if self._state == "stopped":
+                return
+            try:
+                self.feed.write_lease(lease)
+            except (OSError, ContractError) as exc:
+                self.log.warning("羽忆租约写入失败：%s", exc)
+                return
+        self._last_lease = now
+
+    def _lease_ok(self, now: datetime) -> bool:
+        lease = self.feed.read_lease()
+        return lease is not None and lease.is_valid(now)
+
+    # ---- event consumption --------------------------------------------
+
+    def consume_pending(self, now: datetime | None = None) -> int:
+        now = now or self.clock()
+        if not self._lease_ok(now):
+            return 0
+        affected: set[str] = set()
+        consumed = 0
+        for path in self.feed.iter_events():
+            try:
+                event = self.feed.read_event(path)
+            except ContractError as exc:
+                self.log.warning("丢弃损坏事件 %s：%s", path.name, exc)
+                self._delete_event(path)
+                continue
+            except OSError as exc:
+                self.log.warning("读取事件 %s 失败：%s", path.name, exc)
+                continue
+
+            event = self._check_event(event, now)
+            if event is None:
+                self._delete_event(path)
+                continue
+
+            try:
+                inserted = self.store.insert_reading(event, now)
+            except Exception as exc:  # SQLite 故障：保留文件，下次重试
+                self.log.error("写入事件 %s 失败：%s", event.event_id, exc)
+                continue
+
+            if inserted:
+                consumed += 1
+                affected.add(event.user_key)
+                try:
+                    self.store.purge_readings(event.user_key, now)
+                except Exception as exc:
+                    self.log.warning("清理旧占卜记录失败：%s", exc)
+            else:
+                self.log.info("重复事件 %s：已入库，直接删除文件", event.event_id)
+            self._delete_event(path)
+
+        if consumed:
+            self.log.info("消费事件 %d 条，涉及用户 %d 个", consumed, len(affected))
+        for user_key in sorted(affected):
+            self.rebuild_context(user_key, now)
+        return consumed
+
+    def _check_event(self, event: ReadingEvent, now: datetime) -> ReadingEvent | None:
+        if event.conversation_scope != "private":
+            self.log.info("丢弃非私聊事件 %s", event.event_id)
+            return None
+        if event.kind not in ALLOWED_EVENT_KINDS:
+            self.log.info("丢弃不支持的事件类型 %s：%s", event.event_id, event.kind)
+            return None
+        user = self.store.get_user(event.user_key)
+        if user is None:
+            self.log.info("丢弃事件 %s：用户无记录", event.event_id)
+            return None
+        if not user["enabled"]:
+            self.log.info("丢弃事件 %s：用户总开关关闭", event.event_id)
+            return None
+        digest = user_key_hash(event.user_key)
+        auth = self.feed.read_auth(digest)
+        if auth is None:
+            self.log.info("丢弃事件 %s：授权缺失或损坏", event.event_id)
+            return None
+        if not auth.is_valid(now):
+            self.log.info("丢弃事件 %s：授权已过期", event.event_id)
+            return None
+        if not auth.auto_history:
+            self.log.info("丢弃事件 %s：自动历史关闭", event.event_id)
+            return None
+        if auth.user_key_hash != digest:
+            self.log.info("丢弃事件 %s：授权身份不匹配", event.event_id)
+            return None
+        cleared_at = user.get("cleared_at") or ""
+        if cleared_at:
+            try:
+                if parse_ts(event.created_at) <= parse_ts(cleared_at):
+                    self.log.info("丢弃事件 %s：早于清空时间", event.event_id)
+                    return None
+            except ValueError:
+                self.log.info("丢弃事件 %s：清空时间不可解析", event.event_id)
+                return None
+        if not auth.store_topic and event.topic_key:
+            return replace(event, topic_key="")
+        return event
+
+    def _delete_event(self, path) -> None:
+        try:
+            self.feed.delete_event(path)
+        except OSError as exc:
+            self.log.warning("删除事件文件 %s 失败：%s", path.name, exc)
+
+    # ---- context -------------------------------------------------------
+
+    def _drop_context(self, user_key: str, now: datetime) -> bool:
+        """删除 context；删不掉就置 dirty，交给下一次重建 / 启动重试。"""
+        if self.feed.delete_context(user_key_hash(user_key)):
+            return True
+        self.store.set_context_dirty(user_key, True, now)
+        self.log.warning("context 删除失败（已置 dirty）：user=%s", user_key)
+        return False
+
+    def rebuild_context(self, user_key: str, now: datetime | None = None) -> str:
+        now = now or self.clock()
+        digest = user_key_hash(user_key)
+        user = self.store.get_user(user_key)
+        if user is None:
+            return "missing"
+        if not user["enabled"]:
+            if self._drop_context(user_key, now):
+                self.store.set_context_dirty(user_key, False, now)
+            return "disabled"
+
+        explicit = self.store.list_memories(user_key, now, limit=3)
+        stats = self.store.topic_stats(user_key, now)
+        suppressed = self.store.suppressed_topics(user_key)
+        stats = [topic for topic in stats if topic.topic_key not in suppressed]
+        items, text = compose_context(explicit, stats)
+
+        if not items:
+            if self._drop_context(user_key, now):
+                self.store.set_context_dirty(user_key, False, now)
+            return "empty"
+
+        context = MemoryContext(
+            revision=int(user["context_revision"]),
+            generated_at=format_ts(now),
+            expires_at=format_ts(add_days(now, CONTEXT_TTL_DAYS)),
+            source=self.source,
+            scope="private",
+            items=tuple(MemoryItem(kind=item.kind, text=item.text) for item in items),
+            text=text,
+        )
+
+        def still_current() -> bool:
+            # 锁内复查：关闭 / 清空 / 新数据变更后，旧快照不得把 context 写回来。
+            fresh = self.store.get_user(user_key)
+            return bool(fresh and fresh["enabled"]
+                        and int(fresh["context_revision"]) == context.revision)
+
+        try:
+            result = self.feed.write_context(digest, context, guard=still_current)
+        except OSError as exc:
+            self.log.warning("context 写入异常：%s", exc)
+            result = WRITE_ERROR
+        if result == WRITE_WRITTEN:
+            self.store.set_context_dirty(user_key, False, now)
+            if user.get("context_dirty"):
+                self.log.info("重建 dirty context(%s) revision=%d",
+                              self._tag(user_key), context.revision)
+        elif result in (WRITE_TIMEOUT, WRITE_ERROR, WRITE_TOO_LARGE):
+            self.store.set_context_dirty(user_key, True, now)
+            self.log.warning("context 写入失败（%s）：user=%s", result, user_key)
+        return result
+
+    def rebuild_all_contexts(self, now: datetime | None = None) -> None:
+        now = now or self.clock()
+        seen: set[str] = set()
+        for user in self.store.all_users(enabled_only=True) + self.store.dirty_users():
+            user_key = user["user_key"]
+            if user_key in seen:
+                continue
+            seen.add(user_key)
+            self.rebuild_context(user_key, now)
+
+    # ---- auth ----------------------------------------------------------
+
+    def refresh_auth(self, user_key: str, now: datetime | None = None) -> bool:
+        now = now or self.clock()
+        digest = user_key_hash(user_key)
+        user = self.store.get_user(user_key)
+        if user is None:
+            return False
+        if not user["enabled"]:
+            self.feed.delete_auth(digest)
+            return False
+        auth = Auth(
+            user_key_hash=digest,
+            generated_at=format_ts(now),
+            expires_at=format_ts(add_days(now, AUTH_TTL_DAYS)),
+            auto_history=bool(user["auto_history"]),
+            store_topic=bool(user["store_topic"]),
+            source=self.source,
+        )
+        try:
+            self.feed.write_auth(auth)
+        except (OSError, ContractError) as exc:
+            self.log.warning("授权文件写入失败：%s", exc)
+            return False
+        return True
+
+    def refresh_auth_all(self, now: datetime | None = None) -> None:
+        now = now or self.clock()
+        for user in self.store.all_users(enabled_only=True):
+            self.refresh_auth(user["user_key"], now)
+        self._last_auth_refresh = now
+
+    # ---- cleanup -------------------------------------------------------
+
+    def cleanup(self, now: datetime | None = None) -> None:
+        now = now or self.clock()
+        try:
+            removed = self.feed.cleanup(now)
+            if any(removed.values()):
+                self.log.info("清扫：%s", removed)
+        except Exception as exc:
+            self.log.warning("共享目录清扫失败：%s", exc)
+        for user in self.store.all_users():
+            try:
+                self.store.purge_readings(user["user_key"], now)
+            except Exception as exc:
+                self.log.warning("清理占卜记录失败：%s", exc)
+        if self.global_enabled:
+            for user in self.store.dirty_users():
+                self.rebuild_context(user["user_key"], now)
+        self._last_cleanup = now
+
+    # ---- state transitions --------------------------------------------
+
+    def user_state(self, user_key: str) -> dict | None:
+        return self.store.get_user(user_key)
+
+    def enable(self, user_key: str) -> dict:
+        now = self.clock()
+        user = self.store.ensure_user(user_key, now)
+        if not user["enabled"]:
+            self.store.set_user_flags(user_key, now, enabled=1)
+        self.refresh_auth(user_key, now)
+        self.rebuild_context(user_key, now)
+        self.log.info("开关：enable(%s)", self._tag(user_key))
+        return self.store.get_user(user_key) or user
+
+    def enable_auto(self, user_key: str) -> str:
+        now = self.clock()
+        user = self.store.get_user(user_key)
+        if user is None or not user["enabled"]:
+            return "not_enabled"
+        self.store.set_user_flags(user_key, now, auto_history=1)
+        self.refresh_auth(user_key, now)
+        self.rebuild_context(user_key, now)
+        self.log.info("开关：auto(%s)=1", self._tag(user_key))
+        return "ok"
+
+    def enable_topic(self, user_key: str) -> str:
+        now = self.clock()
+        user = self.store.get_user(user_key)
+        if user is None or not user["enabled"]:
+            return "not_enabled"
+        if not user["auto_history"]:
+            return "auto_required"
+        self.store.set_user_flags(user_key, now, store_topic=1)
+        self.refresh_auth(user_key, now)
+        self.rebuild_context(user_key, now)
+        self.log.info("开关：topic(%s)=1", self._tag(user_key))
+        return "ok"
+
+    def disable(self, user_key: str) -> int:
+        now = self.clock()
+        self.store.ensure_user(user_key, now)
+        self.store.disable_user(user_key, now)
+        digest = user_key_hash(user_key)
+        self.feed.delete_auth(digest)
+        if self._drop_context(user_key, now):
+            self.store.set_context_dirty(user_key, False, now)
+        removed = self.feed.remove_events_for_user(user_key)
+        self.log.info("开关：disable(%s)，清理事件 %d 条", self._tag(user_key), removed)
+        return removed
+
+    def clear(self, user_key: str) -> int:
+        now = self.clock()
+        self.store.ensure_user(user_key, now)
+        self.store.clear_user_data(user_key, now)
+        digest = user_key_hash(user_key)
+        self.feed.delete_auth(digest)
+        if self._drop_context(user_key, now):
+            self.store.set_context_dirty(user_key, False, now)
+        removed = self.feed.remove_events_for_user(user_key)
+        self._clear_pending.pop(user_key, None)
+        self.log.info("开关：clear(%s)，清理事件 %d 条", self._tag(user_key), removed)
+        return removed
+
+    def request_clear(self, user_key: str) -> None:
+        self._clear_pending[user_key] = self.clock()
+
+    def confirm_clear(self, user_key: str) -> bool:
+        started = self._clear_pending.pop(user_key, None)
+        if started is None:
+            return False
+        if (self.clock() - started).total_seconds() > CLEAR_CONFIRM_SECONDS:
+            return False
+        self.clear(user_key)
+        return True
+
+    def remember(self, user_key: str, raw: str) -> tuple[int, bool]:
+        category, content = parse_memory_input(raw)
+        if not content:
+            return 0, False
+        truncated = len(content) > MAX_MEMORY_CHARS
+        content = content[:MAX_MEMORY_CHARS]
+        now = self.clock()
+        user = self.store.ensure_user(user_key, now)
+        if not user["enabled"]:
+            self.store.set_user_flags(user_key, now, enabled=1)
+        self.refresh_auth(user_key, now)
+        memory_id = self.store.save_memory(
+            user_key, category, content, normalize_content(content), now)
+        self.rebuild_context(user_key, now)
+        self.log.info("记忆：save(%s) #%d", self._tag(user_key), memory_id)
+        return memory_id, truncated
+
+    def forget(self, user_key: str, memory_id: int) -> bool:
+        now = self.clock()
+        if not self.store.remove_memory(user_key, memory_id, now):
+            return False
+        self.refresh_auth(user_key, now)
+        self._drop_context(user_key, now)
+        self.rebuild_context(user_key, now)
+        self.log.info("记忆：forget(%s) #%d", self._tag(user_key), memory_id)
+        return True
+
+    # ---- read models ---------------------------------------------------
+
+    def list_display(self, user_key: str) -> tuple[list[ExplicitEntry], list[TopicStat]]:
+        now = self.clock()
+        if self.store.get_user(user_key) is None:
+            return [], []
+        memories = self.store.list_memories(user_key, now, limit=10)
+        stats = self.store.topic_stats(user_key, now)
+        suppressed = self.store.suppressed_topics(user_key)
+        return memories, [topic for topic in stats if topic.topic_key not in suppressed]
+
+    def status(self, user_key: str) -> dict:
+        now = self.clock()
+        digest = user_key_hash(user_key)
+        lease = self.feed.read_lease()
+        user = self.store.get_user(user_key)
+        auth = self.feed.read_auth(digest) if user else None
+        return {
+            "global_enabled": self.global_enabled,
+            "lease": lease,
+            "lease_valid": lease is not None and lease.is_valid(now),
+            "user": user,
+            "auth": auth,
+            "auth_valid": auth is not None and auth.is_valid(now),
+            "context": self.feed.read_context(digest),
+            "pending_events": self.feed.count_events_for_user(user_key),
+        }

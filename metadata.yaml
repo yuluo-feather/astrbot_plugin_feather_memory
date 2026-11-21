@@ -1,0 +1,23 @@
+name: feather_memory
+display_name: 羽忆
+desc: 羽忆：为星羽塔罗记住偏好与近期主题（需要星羽塔罗 0.11+ 的共享文件契约）
+short_desc: 为星羽塔罗记住偏好与近期主题
+help: |
+  [羽忆] 查看主动保存与近期主题（私聊）
+  [羽忆 记住 内容] 保存偏好 / 背景 / 目标（私聊；自动开启总开关）
+  [羽忆 忘记 id] 删除一条主动保存
+  [羽忆 清空] 二次确认后清空全部羽忆数据
+  [羽忆 开启] 开启总开关
+  [羽忆 开启 自动] 允许把私聊普通占卜记入近期主题
+  [羽忆 开启 主题] 允许事件携带固定主题枚举
+  [羽忆 关闭] 关闭并删除授权 / context / 待处理事件
+  [羽忆 状态] 查看租约、开关、授权与 context
+  注意：不摄入群聊、不摄入今日牌运、不保存原始问题；数据只在本机 plugin_data。
+version: 0.1.0
+author: 羽落
+repo: https://github.com/yuluo-feather/astrbot_plugin_feather_memory
+astrbot_version: ">=4.16,<5"
+tags:
+  - 记忆
+  - 塔罗
+  - 工具
