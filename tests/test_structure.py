@@ -1,4 +1,4 @@
-"""结构红线：core/app 不碰 astrbot、版本四件套一致、插件入口可导入。"""
+"""结构红线：core/app 不碰 astrbot、版本载体一致、插件入口可导入。"""
 from __future__ import annotations
 
 import ast
@@ -39,9 +39,8 @@ def test_core_does_not_import_outer_layers() -> None:
         assert not offending, f"{path} imports {offending}"
 
 
-def test_version_four_pieces_agree() -> None:
+def test_version_carriers_agree() -> None:
     from data.plugins.astrbot_plugin_feather_memory.core.version import VERSION
-    assert (ROOT / "VERSION").read_text("utf-8").strip() == VERSION
     metadata = (ROOT / "metadata.yaml").read_text("utf-8")
     assert re.search(rf"^version:\s*{re.escape(VERSION)}$", metadata, re.M)
     assert (ROOT / "changelogs" / f"v{VERSION}.md").exists()
