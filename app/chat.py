@@ -328,7 +328,7 @@ def handle_command(service: MemoryService, user_key: str,
                     "请不要保存密码、令牌或账号凭据。")
         memory_id, truncated = service.remember(user_key, arg)
         if not memory_id:
-            return "内容为空，没有保存。"
+            return "内容为空或没有可记录的文字，没有保存。"
         suffix = "（内容过长，已截断到 160 字）" if truncated else ""
         return _with_flavor(service, "remember", f"已保存 #{memory_id}{suffix}。",
                             memory_id=memory_id)
@@ -357,7 +357,7 @@ def handle_command(service: MemoryService, user_key: str,
         if code == "duplicate":
             return "已有一条相同内容，旧内容未改变。"
         if code == "empty":
-            return "新内容为空，旧内容未改变。"
+            return "新内容为空或没有可记录的文字，旧内容未改变。"
         suffix = "（内容过长，已截断到 160 字）" if truncated else ""
         return _with_flavor(service, "modify", f"已更新 #{memory_id}{suffix}。",
                             memory_id=memory_id)

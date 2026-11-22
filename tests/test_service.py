@@ -9,7 +9,11 @@ from data.plugins.astrbot_plugin_feather_memory.adapters.file_lock import FileLo
 from data.plugins.astrbot_plugin_feather_memory.adapters.memory_feed import (
     WRITE_TIMEOUT,
 )
-from data.plugins.astrbot_plugin_feather_memory.app.service import MemoryService
+from data.plugins.astrbot_plugin_feather_memory.app.service import (
+    MemoryService,
+    has_meaningful_text,
+    normalize_content,
+)
 from data.plugins.astrbot_plugin_feather_memory.core.contracts import Auth
 from data.plugins.astrbot_plugin_feather_memory.core.identity import user_key_hash
 from data.plugins.astrbot_plugin_feather_memory.core.timeutil import format_ts, parse_ts
@@ -607,6 +611,49 @@ def test_cleanup_restores_missing_tombstone(service, feed, clock):
 
     auth = feed.read_auth(digest)
     assert auth is not None and auth.auto_history is False
+
+
+def test_normalize_content_matches_render_cleaning():
+    assert normalize_content(" 喜欢  猫。 ") == "喜欢 猫"
+    assert normalize_content("喜欢猫；") == "喜欢猫"
+    assert has_meaningful_text("喜欢猫")
+    assert not has_meaningful_text("！！！")
+    assert not has_meaningful_text("。。。")
+
+
+def test_remember_dedupes_trailing_punctuation(service):
+    service.startup()
+    first, _ = service.remember("aiocqhttp:1", "喜欢猫")
+    second, _ = service.remember("aiocqhttp:1", "喜欢猫。")
+    assert first == second
+    assert service.store.count_memories("aiocqhttp:1") == 1
+    memories, _ = service.list_display("aiocqhttp:1")
+    assert [entry.content for entry in memories] == ["喜欢猫。"]
+
+
+def test_remember_rejects_punctuation_only(service):
+    service.startup()
+    assert service.remember("aiocqhttp:1", "！！！") == (0, False)
+    assert service.remember("aiocqhttp:1", "。。。") == (0, False)
+    assert service.store.count_memories("aiocqhttp:1") == 0
+
+
+def test_update_rejects_punctuation_only(service):
+    service.startup()
+    service.enable("aiocqhttp:1")
+    memory_id, _ = service.remember("aiocqhttp:1", "喜欢猫")
+    assert service.update_memory("aiocqhttp:1", memory_id, "？？！")[0] == "empty"
+    assert service.store.get_memory("aiocqhttp:1", memory_id)["content"] == "喜欢猫"
+
+
+def test_update_to_punctuated_duplicate_is_rejected(service):
+    service.startup()
+    service.enable("aiocqhttp:1")
+    first, _ = service.remember("aiocqhttp:1", "喜欢猫")
+    second, _ = service.remember("aiocqhttp:1", "喜欢狗")
+    assert service.update_memory("aiocqhttp:1", second, "喜欢猫。")[0] == "duplicate"
+    assert service.store.get_memory("aiocqhttp:1", second)["content"] == "喜欢狗"
+    assert service.store.count_memories("aiocqhttp:1") == 2
 
 
 def test_event_for_disabled_user_is_dropped_and_keeps_tombstone(

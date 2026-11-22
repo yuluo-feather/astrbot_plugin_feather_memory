@@ -80,7 +80,13 @@ def parse_memory_input(raw: str) -> tuple[str, str]:
 
 
 def normalize_content(content: str) -> str:
-    return " ".join(content.split())
+    """去重键与渲染清洗保持一致：折叠空白，并去掉句末的「。；; 」。"""
+    return " ".join(content.split()).rstrip("。；; ")
+
+
+def has_meaningful_text(content: str) -> bool:
+    """至少一个字母 / 数字 / 汉字；纯标点或纯符号不算可记录内容。"""
+    return any(char.isalnum() for char in content)
 
 
 class MemoryService:
@@ -721,6 +727,8 @@ class MemoryService:
             return 0, False
         truncated = len(content) > MAX_MEMORY_CHARS
         content = content[:MAX_MEMORY_CHARS]
+        if not has_meaningful_text(content):
+            return 0, False
         with self._state_transition():
             now = self.clock()
             user = self.store.ensure_user(user_key, now)
@@ -752,6 +760,8 @@ class MemoryService:
             return "empty", False
         truncated = len(text) > MAX_MEMORY_CHARS
         text = text[:MAX_MEMORY_CHARS]
+        if not has_meaningful_text(text):
+            return "empty", False
         with self._state_transition():
             now = self.clock()
             old = self.store.get_memory(user_key, memory_id)

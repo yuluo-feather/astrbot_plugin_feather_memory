@@ -119,6 +119,22 @@ def test_remember_truncation_notice(service):
     assert "已截断到 160 字" in reply
 
 
+def test_remember_rejects_punctuation_only(service):
+    service.startup()
+    reply = handle_command(service, USER, True, "记住 ！！！")
+    assert "没有可记录的文字" in reply
+    assert service.store.count_memories(USER) == 0
+
+
+def test_modify_rejects_punctuation_only(service):
+    service.startup()
+    service.enable(USER)
+    service.remember(USER, "喜欢猫")
+    reply = handle_command(service, USER, True, "修改 1 ！！！")
+    assert "没有可记录的文字" in reply
+    assert "#1 [偏好] 喜欢猫" in handle_command(service, USER, True, "")
+
+
 def test_clear_requires_confirmation(service, clock):
     service.startup()
     handle_command(service, USER, True, "开启")
