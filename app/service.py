@@ -89,6 +89,24 @@ def has_meaningful_text(content: str) -> bool:
     return any(char.isalnum() for char in content)
 
 
+def prepare_memory_text(content: str) -> tuple[str, bool, bool]:
+    """折叠空白并截到 160 字；前导符号吃满窗口时从第一个有效字符开始。
+
+    返回 (存库文本, 是否截断, 是否有可记录文字)。
+    """
+    text = " ".join((content or "").split())
+    if not text:
+        return "", False, False
+    truncated = len(text) > MAX_MEMORY_CHARS
+    window = text[:MAX_MEMORY_CHARS]
+    if not has_meaningful_text(window):
+        first = next((index for index, char in enumerate(text) if char.isalnum()), None)
+        if first is None:
+            return "", truncated, False
+        window = text[first:first + MAX_MEMORY_CHARS]
+    return window, truncated, True
+
+
 class MemoryService:
     def __init__(self, store: SqliteStore, feed: MemoryFeed, *,
                  global_enabled: bool, version: str,
@@ -723,11 +741,8 @@ class MemoryService:
 
     def remember(self, user_key: str, raw: str) -> tuple[int, bool]:
         category, content = parse_memory_input(raw)
-        if not content:
-            return 0, False
-        truncated = len(content) > MAX_MEMORY_CHARS
-        content = content[:MAX_MEMORY_CHARS]
-        if not has_meaningful_text(content):
+        content, truncated, meaningful = prepare_memory_text(content)
+        if not meaningful:
             return 0, False
         with self._state_transition():
             now = self.clock()
@@ -756,11 +771,8 @@ class MemoryService:
                       raw: str) -> tuple[str, bool]:
         text = " ".join((raw or "").split())
         category_hint, text = _split_category_prefix(text)
-        if not text:
-            return "empty", False
-        truncated = len(text) > MAX_MEMORY_CHARS
-        text = text[:MAX_MEMORY_CHARS]
-        if not has_meaningful_text(text):
+        text, truncated, meaningful = prepare_memory_text(text)
+        if not meaningful:
             return "empty", False
         with self._state_transition():
             now = self.clock()

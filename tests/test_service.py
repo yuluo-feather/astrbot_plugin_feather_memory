@@ -614,8 +614,12 @@ def test_cleanup_restores_missing_tombstone(service, feed, clock):
 
 
 def test_normalize_content_matches_render_cleaning():
+    from data.plugins.astrbot_plugin_feather_memory.core.merge import _clean
+
+    for raw in ("喜欢猫。", "喜欢猫；", " 喜欢  猫。", "a;", "。。。", "！"):
+        collapsed = " ".join(raw.split())
+        assert normalize_content(raw) == _clean(collapsed), raw
     assert normalize_content(" 喜欢  猫。 ") == "喜欢 猫"
-    assert normalize_content("喜欢猫；") == "喜欢猫"
     assert has_meaningful_text("喜欢猫")
     assert not has_meaningful_text("！！！")
     assert not has_meaningful_text("。。。")
@@ -631,6 +635,16 @@ def test_remember_dedupes_trailing_punctuation(service):
     assert [entry.content for entry in memories] == ["喜欢猫。"]
 
 
+def test_same_text_different_category_stays_two_entries(service):
+    service.startup()
+    service.enable("aiocqhttp:1")
+    preference, _ = service.remember("aiocqhttp:1", "偏好 喜欢猫")
+    background, _ = service.remember("aiocqhttp:1", "背景 喜欢猫")
+    assert preference != background
+    context = service.feed.read_context(user_key_hash("aiocqhttp:1"))
+    assert context is not None and context.text.count("喜欢猫") == 2
+
+
 def test_remember_rejects_punctuation_only(service):
     service.startup()
     assert service.remember("aiocqhttp:1", "！！！") == (0, False)
@@ -638,12 +652,43 @@ def test_remember_rejects_punctuation_only(service):
     assert service.store.count_memories("aiocqhttp:1") == 0
 
 
+def test_remember_rejects_emoji_and_accepts_digits(service):
+    service.startup()
+    assert service.remember("aiocqhttp:1", "❤️") == (0, False)
+    assert service.remember("aiocqhttp:1", "12345")[0] > 0
+
+
+def test_remember_boundary_160_and_161(service):
+    service.startup()
+    exact, truncated = service.remember("aiocqhttp:1", "长" * 160)
+    assert exact > 0 and truncated is False
+    over, truncated = service.remember("aiocqhttp:1", "短" * 161)
+    assert over > 0 and truncated is True
+    assert len(service.store.get_memory("aiocqhttp:1", over)["content"]) == 160
+
+
+def test_remember_skips_leading_symbols_that_fill_the_window(service):
+    service.startup()
+    memory_id, truncated = service.remember("aiocqhttp:1", "！" * 160 + "喜欢猫")
+    assert memory_id > 0 and truncated is True
+    assert service.store.get_memory("aiocqhttp:1", memory_id)["content"] == "喜欢猫"
+
+
+def test_rejected_remember_creates_no_user_or_auth(service, feed):
+    service.startup()
+    assert service.remember("aiocqhttp:404", "！！！") == (0, False)
+    assert service.store.get_user("aiocqhttp:404") is None
+    assert feed.read_auth(user_key_hash("aiocqhttp:404")) is None
+
+
 def test_update_rejects_punctuation_only(service):
     service.startup()
     service.enable("aiocqhttp:1")
     memory_id, _ = service.remember("aiocqhttp:1", "喜欢猫")
+    before = service.user_state("aiocqhttp:1")["context_revision"]
     assert service.update_memory("aiocqhttp:1", memory_id, "？？！")[0] == "empty"
     assert service.store.get_memory("aiocqhttp:1", memory_id)["content"] == "喜欢猫"
+    assert service.user_state("aiocqhttp:1")["context_revision"] == before
 
 
 def test_update_to_punctuated_duplicate_is_rejected(service):
