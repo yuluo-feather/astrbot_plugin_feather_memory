@@ -102,7 +102,7 @@ def test_modify_memory(service):
     assert handle_command(service, USER, True, "修改 99 随便") == "没有找到 #99，旧内容未改变。"
     assert handle_command(service, USER, True, "修改 1").startswith("用法：/羽忆 修改")
     truncated_reply = handle_command(service, USER, True, "修改 1 " + "长" * 200)
-    assert truncated_reply.splitlines()[0].endswith("（内容过长，已截断到 160 字）。")
+    assert truncated_reply.splitlines()[0].endswith("（内容过长，已截取保存）。")
 
 
 def test_remember_category_prefix(service):
@@ -116,7 +116,7 @@ def test_remember_category_prefix(service):
 def test_remember_truncation_notice(service):
     service.startup()
     reply = handle_command(service, USER, True, "记住 " + "长" * 200)
-    assert "已截断到 160 字" in reply
+    assert "已截取保存" in reply
 
 
 def test_remember_rejects_punctuation_only(service):

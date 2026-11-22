@@ -674,6 +674,37 @@ def test_remember_skips_leading_symbols_that_fill_the_window(service):
     assert service.store.get_memory("aiocqhttp:1", memory_id)["content"] == "喜欢猫"
 
 
+def test_remember_keeps_normal_leading_symbols(service):
+    service.startup()
+    for text in ("！！！喜欢猫", "❤️喜欢猫"):
+        memory_id, truncated = service.remember("aiocqhttp:1", text)
+        assert memory_id > 0 and truncated is False
+        assert service.store.get_memory("aiocqhttp:1", memory_id)["content"] == text
+
+
+def test_remember_partial_leading_symbols_are_truncated_as_is(service):
+    service.startup()
+    memory_id, truncated = service.remember("aiocqhttp:1", "！" * 159 + "喜欢猫")
+    assert memory_id > 0 and truncated is True
+    assert service.store.get_memory("aiocqhttp:1", memory_id)["content"] == "！" * 159 + "喜"
+
+
+def test_shifted_window_keeps_exactly_160_chars(service):
+    service.startup()
+    memory_id, _ = service.remember("aiocqhttp:1", "！" * 160 + "长" * 200)
+    stored = service.store.get_memory("aiocqhttp:1", memory_id)["content"]
+    assert stored == "长" * 160
+
+    far, _ = service.remember("aiocqhttp:1", "！" * 200 + "短" * 200)
+    assert service.store.get_memory("aiocqhttp:1", far)["content"] == "短" * 160
+
+
+def test_remember_collapses_whitespace_before_storing(service):
+    service.startup()
+    memory_id, _ = service.remember("aiocqhttp:1", "喜欢  猫")
+    assert service.store.get_memory("aiocqhttp:1", memory_id)["content"] == "喜欢 猫"
+
+
 def test_rejected_remember_creates_no_user_or_auth(service, feed):
     service.startup()
     assert service.remember("aiocqhttp:404", "！！！") == (0, False)
@@ -689,6 +720,24 @@ def test_update_rejects_punctuation_only(service):
     assert service.update_memory("aiocqhttp:1", memory_id, "？？！")[0] == "empty"
     assert service.store.get_memory("aiocqhttp:1", memory_id)["content"] == "喜欢猫"
     assert service.user_state("aiocqhttp:1")["context_revision"] == before
+
+
+def test_update_uses_same_leading_symbol_window(service):
+    service.startup()
+    service.enable("aiocqhttp:1")
+    memory_id, _ = service.remember("aiocqhttp:1", "喜欢猫")
+    code, truncated = service.update_memory(
+        "aiocqhttp:1", memory_id, "！" * 160 + "喜欢狗")
+    assert (code, truncated) == ("ok", True)
+    assert service.store.get_memory("aiocqhttp:1", memory_id)["content"] == "喜欢狗"
+
+
+def test_update_exactly_160_is_not_truncated(service):
+    service.startup()
+    service.enable("aiocqhttp:1")
+    memory_id, _ = service.remember("aiocqhttp:1", "喜欢猫")
+    code, truncated = service.update_memory("aiocqhttp:1", memory_id, "长" * 160)
+    assert (code, truncated) == ("ok", False)
 
 
 def test_update_to_punctuated_duplicate_is_rejected(service):
