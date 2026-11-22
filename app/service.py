@@ -134,6 +134,7 @@ class MemoryService:
         self._last_lease: datetime | None = None
         self._last_cleanup: datetime | None = None
         self._last_auth_refresh: datetime | None = None
+        self._last_stats: dict | None = None
         self._clear_pending: dict[str, datetime] = {}
 
     @property
@@ -553,7 +554,10 @@ class MemoryService:
             for user in self.store.dirty_users():
                 self.rebuild_context(user["user_key"], now)
         self._last_cleanup = now
-        self.log.info("统计：%s", self.stats())
+        stats = self.stats()
+        if stats != self._last_stats:
+            self.log.info("统计：%s", stats)
+            self._last_stats = stats
 
     def stats(self) -> dict:
         """只读统计，不设上限、不影响行为。"""

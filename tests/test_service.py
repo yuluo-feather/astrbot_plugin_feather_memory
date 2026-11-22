@@ -1,6 +1,7 @@
 """业务编排：租约、授权、事件消费、context 重建与开关状态表。"""
 from __future__ import annotations
 
+import logging
 import os
 import sqlite3
 from datetime import timedelta
@@ -565,6 +566,37 @@ def test_status_counts_pending_events(service, feed, make_event, enabled_user):
 def test_context_write_timeout_constant_is_exposed():
     assert WRITE_TIMEOUT == "timeout"
     assert os.name in ("nt", "posix")
+
+
+def _stats_lines(caplog) -> list[str]:
+    return [record.getMessage() for record in caplog.records
+            if "统计：" in record.getMessage()]
+
+
+def _fresh_service(store, feed, clock) -> MemoryService:
+    return MemoryService(store, feed, global_enabled=True, version="0.1.0",
+                         clock=clock.now,
+                         log=logging.getLogger("feather_memory.tests"))
+
+
+def test_cleanup_logs_stats_only_when_changed(store, feed, clock, caplog):
+    service = _fresh_service(store, feed, clock)
+    with caplog.at_level(logging.INFO, logger="feather_memory.tests"):
+        service.cleanup(clock.now())
+        service.cleanup(clock.now())
+    assert len(_stats_lines(caplog)) == 1
+
+
+def test_cleanup_logs_stats_again_after_change(store, feed, clock, caplog):
+    service = _fresh_service(store, feed, clock)
+    service.cleanup(clock.now())
+    caplog.clear()
+
+    service.remember("aiocqhttp:1", "喜欢猫")
+    with caplog.at_level(logging.INFO, logger="feather_memory.tests"):
+        service.cleanup(clock.now())
+        service.cleanup(clock.now())
+    assert len(_stats_lines(caplog)) == 1
 
 
 def test_lease_carries_auto_enroll_config(service, feed):
