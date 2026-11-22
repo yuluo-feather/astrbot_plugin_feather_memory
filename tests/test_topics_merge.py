@@ -68,6 +68,16 @@ def test_merge_truncation_drops_topics_not_explicit() -> None:
     assert len(text) <= 600
 
 
+def test_merge_drops_whole_entries_instead_of_slicing() -> None:
+    explicit = [ExplicitEntry(i, "preference", f"{i}:" + "长" * 158)
+                for i in range(1, 5)]
+    items, text = compose_context(explicit, [])
+    assert len(text) <= 600
+    assert len(items) == 3
+    assert all(item.text in text for item in items)
+    assert sum(len(item.text) for item in items) <= len(text)
+
+
 def test_merge_skips_zero_count_and_empty_topics() -> None:
     items, _ = compose_context([], [TopicStat("", 3, "x"), TopicStat("工作", 0, "x")])
     assert items == []

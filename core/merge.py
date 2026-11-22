@@ -59,12 +59,16 @@ def compose_context(
 
     while True:
         text = _render(picked, picked_topics)
-        if len(text) <= text_limit or not picked_topics:
+        if len(text) <= text_limit:
             break
-        picked_topics.pop()
-
-    if len(text) > text_limit:
-        text = text[:text_limit]
+        # 超限时整条丢弃，保证 items 与 text 始终一致；不对拼好的字符串切片。
+        if picked_topics:
+            picked_topics.pop()
+        elif picked:
+            picked.pop()
+        else:
+            text = ""
+            break
 
     items: list[ComposedItem] = [
         ComposedItem(kind=entry.category, text=_clean(entry.content)) for entry in picked
