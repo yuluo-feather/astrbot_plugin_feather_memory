@@ -123,8 +123,56 @@ def test_merge_drops_oldest_explicit_first() -> None:
                 ExplicitEntry(2, "preference", "中" + "长" * 299),
                 ExplicitEntry(3, "preference", "旧" + "长" * 299)]
     items, text = compose_context(explicit, [])
-    assert items and items[0].text.startswith("新")
+    assert len(items) == 1
+    assert len(text) <= 600
+    assert items[0].text.startswith("新")
     assert "旧" not in text
+    assert text == _reconstructed(items)
+
+
+def test_merge_prefilter_keeps_short_entry_after_oversized() -> None:
+    explicit = [ExplicitEntry(1, "preference", "长" * 601),
+                ExplicitEntry(2, "preference", "短记忆")]
+    items, text = compose_context(explicit, [])
+    assert [item.text for item in items] == ["短记忆"]
+    assert text == _reconstructed(items)
+
+
+def test_merge_prefilter_runs_before_limit() -> None:
+    explicit = ([ExplicitEntry(0, "preference", "长" * 700)]
+                + [ExplicitEntry(i, "preference", f"短{i}") for i in range(1, 6)])
+    items, text = compose_context(explicit, [])
+    assert len(items) == 5
+    assert items[0].text == "短1"
+    assert text == _reconstructed(items)
+
+
+def test_merge_limits_explicit_to_five() -> None:
+    explicit = [ExplicitEntry(i, "preference", f"偏好{i}") for i in range(1, 7)]
+    items, text = compose_context(explicit, [])
+    assert [item.text for item in items] == ["偏好1", "偏好2", "偏好3", "偏好4", "偏好5"]
+    assert text == _reconstructed(items)
+
+
+def test_merge_topic_does_not_skip_newer_for_older() -> None:
+    explicit = [ExplicitEntry(1, "preference", "长" * 289),
+                ExplicitEntry(2, "preference", "短" * 289)]
+    topics = [TopicStat("工作", 100, "2026-11-21T10:00:00Z"),
+              TopicStat("感情", 3, "2026-11-20T10:00:00Z")]
+    items, text = compose_context(explicit, topics)
+    assert len(items) == 2
+    assert "工作" not in text and "感情" not in text
+    assert text == _reconstructed(items)
+
+
+def test_merge_topics_stop_at_first_that_does_not_fit() -> None:
+    explicit = [ExplicitEntry(i, "preference", "长" * 190) for i in range(1, 4)]
+    topics = [TopicStat("工作", 3, "2026-11-21T10:00:00Z"),
+              TopicStat("感情", 30, "2026-11-20T10:00:00Z")]
+    items, text = compose_context(explicit, topics)
+    assert [item.kind for item in items] == [
+        "preference", "preference", "preference", "recent_topic"]
+    assert "工作" in text and "感情" not in text
     assert text == _reconstructed(items)
 
 

@@ -53,10 +53,11 @@ def compose_context(
     text_limit: int = CONTEXT_TEXT_MAX_CHARS,
 ) -> tuple[list[ComposedItem], str]:
     limit = min(explicit_limit, max_items)
-    picked = [
-        entry for entry in explicit[:limit]
+    candidates = [
+        entry for entry in explicit
         if _clean(entry.content) and len(_render([entry], [])) <= text_limit
     ]
+    picked = candidates[:limit]
     # 显式优先：显式条目自己放不下时从最旧开始整条丢弃，不对字符串切片。
     while picked and len(_render(picked, [])) > text_limit:
         picked.pop()
@@ -71,6 +72,8 @@ def compose_context(
         trial = picked_topics + [topic]
         if len(_render(picked, trial)) <= text_limit:
             picked_topics = trial
+        else:
+            break  # 最近优先：第一条放不下就停，不跳过它去收更旧的主题。
 
     text = _render(picked, picked_topics)
 
