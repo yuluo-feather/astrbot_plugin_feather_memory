@@ -176,6 +176,25 @@ def test_merge_topics_stop_at_first_that_does_not_fit() -> None:
     assert text == _reconstructed(items)
 
 
+def test_merge_skips_invalid_topic_and_keeps_next() -> None:
+    topics = [TopicStat("", 5, "2026-11-21T10:00:00Z"),
+              TopicStat("工作", 0, "2026-11-21T09:00:00Z"),
+              TopicStat("感情", 3, "2026-11-20T10:00:00Z")]
+    items, text = compose_context([], topics)
+    assert [item.text for item in items] == ["感情（最近 3 次）"]
+    assert text == _reconstructed(items)
+
+
+def test_merge_topic_can_fill_exactly_six_hundred() -> None:
+    explicit = [ExplicitEntry(i, "preference", "长" * size)
+                for i, size in enumerate((160, 160, 160, 97), start=1)]
+    items, text = compose_context(
+        explicit, [TopicStat("学业", 1, "2026-11-21T10:00:00Z")])
+    assert len(text) == 600
+    assert "学业" in text
+    assert text == _reconstructed(items)
+
+
 def test_merge_refills_topic_slots_after_dropping_explicit() -> None:
     explicit = [ExplicitEntry(i, "preference", "长" * 160) for i in range(1, 6)]
     topics = [TopicStat("工作", 3, "2026-11-21T10:00:00Z"),
