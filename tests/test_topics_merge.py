@@ -59,10 +59,22 @@ def test_merge_empty() -> None:
     assert text == ""
 
 
+def _reconstructed(items) -> str:
+    if not items:
+        return ""
+    explicit = [item.text for item in items if item.kind != "recent_topic"]
+    topics = [item.text for item in items if item.kind == "recent_topic"]
+    parts = list(explicit)
+    if topics:
+        parts.append("最近关注" + "、".join(topics))
+    return "这位用户" + "；".join(parts) + "。"
+
+
 def test_merge_truncation_drops_topics_not_explicit() -> None:
-    explicit = [ExplicitEntry(i, "preference", "长" * 220) for i in range(1, 4)]
+    explicit = [ExplicitEntry(i, "preference", "长" * 195) for i in range(1, 4)]
     topics = [TopicStat("工作", 3, "2026-11-21T10:00:00Z")]
     items, text = compose_context(explicit, topics)
+    assert len(items) == 3
     assert all(item.kind == "preference" for item in items)
     assert "工作" not in text
     assert len(text) <= 600
@@ -74,8 +86,56 @@ def test_merge_drops_whole_entries_instead_of_slicing() -> None:
     items, text = compose_context(explicit, [])
     assert len(text) <= 600
     assert len(items) == 3
+    assert text == _reconstructed(items)
     assert all(item.text in text for item in items)
-    assert sum(len(item.text) for item in items) <= len(text)
+
+
+def test_merge_mixed_items_reconstruct_exactly() -> None:
+    explicit = [ExplicitEntry(i, "preference", f"偏好{i}") for i in range(1, 5)]
+    topics = [TopicStat("工作", 3, "2026-11-21T10:00:00Z"),
+              TopicStat("感情", 2, "2026-11-20T10:00:00Z")]
+    items, text = compose_context(explicit, topics)
+    assert len(items) == 5
+    assert text == _reconstructed(items)
+
+
+def test_merge_text_limit_boundary() -> None:
+    fits = [ExplicitEntry(1, "preference", "长" * 297),
+            ExplicitEntry(2, "preference", "短" * 297)]
+    items, text = compose_context(fits, [])
+    assert (len(items), len(text)) == (2, 600)
+
+    over = [ExplicitEntry(1, "preference", "长" * 298),
+            ExplicitEntry(2, "preference", "短" * 298)]
+    items, text = compose_context(over, [])
+    assert len(items) == 1
+    assert text == _reconstructed(items)
+
+
+def test_merge_single_oversized_entry_is_dropped() -> None:
+    items, text = compose_context(
+        [ExplicitEntry(1, "preference", "长" * 601)], [])
+    assert items == [] and text == ""
+
+
+def test_merge_drops_oldest_explicit_first() -> None:
+    explicit = [ExplicitEntry(1, "preference", "新" + "长" * 299),
+                ExplicitEntry(2, "preference", "中" + "长" * 299),
+                ExplicitEntry(3, "preference", "旧" + "长" * 299)]
+    items, text = compose_context(explicit, [])
+    assert items and items[0].text.startswith("新")
+    assert "旧" not in text
+    assert text == _reconstructed(items)
+
+
+def test_merge_refills_topic_slots_after_dropping_explicit() -> None:
+    explicit = [ExplicitEntry(i, "preference", "长" * 160) for i in range(1, 6)]
+    topics = [TopicStat("工作", 3, "2026-11-21T10:00:00Z"),
+              TopicStat("感情", 2, "2026-11-20T10:00:00Z")]
+    items, text = compose_context(explicit, topics)
+    kinds = [item.kind for item in items]
+    assert kinds == ["preference"] * 3 + ["recent_topic"] * 2
+    assert text == _reconstructed(items)
 
 
 def test_merge_skips_zero_count_and_empty_topics() -> None:

@@ -52,23 +52,27 @@ def compose_context(
     explicit_limit: int = EXPLICIT_LIMIT,
     text_limit: int = CONTEXT_TEXT_MAX_CHARS,
 ) -> tuple[list[ComposedItem], str]:
-    picked = [entry for entry in explicit[:explicit_limit] if _clean(entry.content)]
-    slots = max(0, max_items - len(picked))
-    picked_topics = [topic for topic in topics[:slots]
-                     if topic.topic_key and topic.count > 0]
+    limit = min(explicit_limit, max_items)
+    picked = [
+        entry for entry in explicit[:limit]
+        if _clean(entry.content) and len(_render([entry], [])) <= text_limit
+    ]
+    # 显式优先：显式条目自己放不下时从最旧开始整条丢弃，不对字符串切片。
+    while picked and len(_render(picked, [])) > text_limit:
+        picked.pop()
 
-    while True:
-        text = _render(picked, picked_topics)
-        if len(text) <= text_limit:
+    slots = max(0, max_items - len(picked))
+    picked_topics: list[TopicStat] = []
+    for topic in topics:
+        if len(picked_topics) >= slots:
             break
-        # 超限时整条丢弃，保证 items 与 text 始终一致；不对拼好的字符串切片。
-        if picked_topics:
-            picked_topics.pop()
-        elif picked:
-            picked.pop()
-        else:
-            text = ""
-            break
+        if not topic.topic_key or topic.count <= 0:
+            continue
+        trial = picked_topics + [topic]
+        if len(_render(picked, trial)) <= text_limit:
+            picked_topics = trial
+
+    text = _render(picked, picked_topics)
 
     items: list[ComposedItem] = [
         ComposedItem(kind=entry.category, text=_clean(entry.content)) for entry in picked
